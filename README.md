@@ -8,4 +8,4 @@ Layout:
 - `SKILL.md` — the canonical skill (copy-paste ready).
 - `brief.md` — the original design brief the skill was built from.
 - `template/` — the sprite app template (Phoenix LiveView + Ash + SQLite).
-- `.claude/skills/design-sprites/SKILL.md` — a byte-identical copy of `SKILL.md` so Claude Code sessions mounting this repo discover the skill automatically. Regenerate it whenever `SKILL.md` changes (`cp SKILL.md .claude/skills/design-sprites/SKILL.md`).
+- `.claude/skills/design-sprites/SKILL.md` — a symlink to the root `SKILL.md`, so Claude Code sessions mounting this repo discover the skill automatically. One canonical file; the link never drifts.
