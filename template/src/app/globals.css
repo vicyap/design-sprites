@@ -1,0 +1,21 @@
+@import 'tailwindcss';
+/* All colours are theme tokens (shadcn/Tailwind style CSS variables) so a
+   future dark/light theme (v3.5) is a token swap, not a refactor. */
+:root{
+  --background:#ffffff;
+  --foreground:#171717;
+  --card:#ffffff;
+  --card-foreground:#171717;
+  --muted:#f4f4f5;
+  --muted-foreground:#52525b;
+  --border:#e4e4e7;
+  --accent:#18181b;
+  --accent-foreground:#ffffff;
+  --accent-soft:#eef2ff;
+  --success:#166534;
+  --success-soft:#f0fdf4;
+  --warning:#92400e;
+  --warning-soft:#fffbeb;
+  --destructive:#b91c1c;
+}
+body{background:var(--background);color:var(--foreground);font-family:ui-sans-serif,system-ui,sans-serif}

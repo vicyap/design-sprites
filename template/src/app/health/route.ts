@@ -1,0 +1,3 @@
+import { NextResponse } from 'next/server'; import { dbRoundTrip, ensureProject } from '@/lib/db'; import { emit } from '@/lib/observe'; import { APP_VERSION } from '@/lib/version';
+export const dynamic='force-dynamic';
+export async function GET(){ try{ ensureProject(); const r=dbRoundTrip(); emit('http.health','succeeded','ok',{entries:r.entries}); return NextResponse.json({ok:true,app:'design_sprite',version:APP_VERSION,db:'ok',entries:r.entries}); }catch{ emit('http.health','failed','db_error'); return NextResponse.json({ok:false,app:'design_sprite',version:APP_VERSION,db:'error'},{status:500}); } }

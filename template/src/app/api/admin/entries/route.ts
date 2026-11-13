@@ -1,0 +1,3 @@
+import { NextResponse } from 'next/server'; import { addEntry, checkToken } from '@/lib/db'; import { emit } from '@/lib/observe';
+export const dynamic='force-dynamic';
+export async function POST(req:Request){ if(!checkToken(req)){ emit('admin.entries.create','failed','auth_failed'); return NextResponse.json({error:'unauthorized'},{status:401}); } const b=await req.json().catch(()=>null); const text=typeof b?.body==='string'?b.body.trim():''; if(!text){ return NextResponse.json({error:'body required'},{status:400}); } const e=addEntry(b.body); emit('admin.entries.create','succeeded','ok',{id:e.id}); return NextResponse.json({entry:e},{status:201}); }

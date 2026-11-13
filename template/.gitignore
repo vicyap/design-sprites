@@ -1,7 +1,10 @@
-/_build/
-/deps/
-/dev-data/
-erl_crash.dump
+node_modules/
+.next/
+data/
 *.db
-*.db-*
-release.tar.gz
+*.db-shm
+*.db-wal
+*.tgz
+.env*
+!.env.example
+admin.token

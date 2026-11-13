@@ -1,0 +1,197 @@
+// Design Sprites v3 — turn protocol: pure, deterministic logic.
+// No DB, no IO imports: everything here is testable in isolation.
+// Scoring split (per model): deterministic code computes the PROVISIONAL score
+// at answer time (choice vs prediction, Other = miss); the driver JUDGES each
+// provisional via score_answer (hit / miss / skip / strike). A build-changing
+// comment is a driver judgement: the driver passes judgement "miss" with
+// reason "build_changing_comment" — code cannot detect it, so it is not
+// encoded here beyond carrying the reason through verbatim.
+
+export type QuestionType = 'single' | 'multi' | 'preview';
+export type ScoreResult = 'hit' | 'miss' | 'provisional' | 'struck';
+
+export interface QOption { value: string; label: string }
+export interface Variant { id: string; label?: string; content?: string }
+export interface QuestionPayload {
+  key: string;
+  type: QuestionType;
+  prompt: string;
+  load_bearing?: boolean;
+  options: QOption[];
+  prediction?: string | string[] | null;
+  recommended?: string | null;
+  variants?: Variant[];
+}
+export interface AnswerPayload {
+  question_key: string;
+  choice?: string | null;
+  choices?: string[] | null;
+  other_text?: string;
+  comment?: string;
+  skipped?: boolean;
+}
+export interface ScorePayload {
+  question_key: string;
+  result: ScoreResult;
+  provisional: boolean;
+  reason: string;
+  source: 'deterministic' | 'driver';
+}
+export interface GateError { code: string; message: string; question_key?: string }
+
+export const OTHER_OPTION: QOption = { value: 'other', label: 'Other' };
+export const MAX_NAMED_OPTIONS = 9;
+
+// The Other option lives INSIDE the option group. Staging never includes it;
+// commit appends it automatically so it can never be forgotten or duplicated.
+export function withOther(options: QOption[]): QOption[] {
+  if (options.some((o) => o.value === 'other')) return options;
+  return [...options, { ...OTHER_OPTION }];
+}
+
+export function validateQuestion(q: any, existingKeys: Set<string>): GateError[] {
+  const errs: GateError[] = [];
+  const key = typeof q?.key === 'string' ? q.key : '';
+  if (!key) { errs.push({ code: 'missing_key', message: 'question key is required' }); return errs; }
+  if (existingKeys.has(key)) errs.push({ code: 'duplicate_question_key', message: `question key already exists: ${key}`, question_key: key });
+  if (!['single', 'multi', 'preview'].includes(q?.type)) errs.push({ code: 'bad_type', message: `type must be single|multi|preview, got: ${String(q?.type)}`, question_key: key });
+  if (typeof q?.prompt !== 'string' || !q.prompt.trim()) errs.push({ code: 'missing_prompt', message: 'prompt is required', question_key: key });
+  const opts: any[] = Array.isArray(q?.options) ? q.options : [];
+  const named = opts.filter((o) => o && o.value !== 'other');
+  if (named.length < 1) errs.push({ code: 'no_options', message: 'at least one named option is required', question_key: key });
+  if (named.length > MAX_NAMED_OPTIONS) errs.push({ code: 'too_many_options', message: `${named.length} named options exceeds the max of ${MAX_NAMED_OPTIONS} (Other is added automatically as the 10th)`, question_key: key });
+  const values = named.map((o) => o?.value);
+  if (new Set(values).size !== values.length) errs.push({ code: 'duplicate_option', message: 'option values must be unique', question_key: key });
+  for (const o of named) {
+    if (typeof o?.value !== 'string' || !o.value || typeof o?.label !== 'string' || !o.label) {
+      errs.push({ code: 'bad_option', message: 'every option needs a non-empty value and label', question_key: key }); break;
+    }
+  }
+  // Prediction must reference named options.
+  const pred = q?.prediction;
+  if (pred !== undefined && pred !== null) {
+    if (q.type === 'multi') {
+      if (!Array.isArray(pred) || pred.length === 0 || pred.some((p: any) => !values.includes(p)))
+        errs.push({ code: 'bad_prediction', message: 'multi prediction must be a non-empty subset of option values', question_key: key });
+    } else if (typeof pred !== 'string' || !values.includes(pred)) {
+      errs.push({ code: 'bad_prediction', message: 'prediction must be one of the option values', question_key: key });
+    }
+  }
+  // Preview: 2-4 variants, and option values must cover variant ids exactly.
+  if (q?.type === 'preview') {
+    const variants: any[] = Array.isArray(q?.variants) ? q.variants : [];
+    if (variants.length < 2 || variants.length > 4)
+      errs.push({ code: 'bad_variant_count', message: `preview questions need 2-4 variants, got ${variants.length}`, question_key: key });
+    const vids = variants.map((v) => v?.id);
+    if (vids.some((v) => typeof v !== 'string' || !v) || new Set(vids).size !== vids.length)
+      errs.push({ code: 'bad_variant', message: 'every variant needs a unique non-empty id', question_key: key });
+    const optSet = new Set(values); const varSet = new Set(vids);
+    const missing = vids.filter((v) => !optSet.has(v)); const extra = values.filter((v: string) => !varSet.has(v));
+    if (missing.length || extra.length)
+      errs.push({ code: 'variant_coverage', message: `preview option values must cover variant ids exactly; missing options for: [${missing.join(', ')}], options without variants: [${extra.join(', ')}]`, question_key: key });
+  }
+  return errs;
+}
+
+// Deterministic provisional score for a fresh answer. Always provisional:
+// the driver must judge it before any turn can commit (end_turn gate).
+export function provisionalScore(q: QuestionPayload, a: AnswerPayload): ScorePayload {
+  const base = { question_key: q.key, provisional: true, source: 'deterministic' as const };
+  if (a.skipped) return { ...base, result: 'provisional', reason: 'skip_prediction_stands' };
+  const pred = q.prediction;
+  if (pred === undefined || pred === null) return { ...base, result: 'provisional', reason: 'no_prediction' };
+  if (q.type === 'multi') {
+    const got = new Set(a.choices || []);
+    // Other chosen in a multi-select is a miss, same as single (model rule).
+    if (got.has('other')) return { ...base, result: 'miss', reason: 'other_chosen' };
+    const want = new Set(pred as string[]);
+    const eq = got.size === want.size && [...want].every((v) => got.has(v));
+    return { ...base, result: eq ? 'hit' : 'miss', reason: eq ? 'choice_match' : 'choice_mismatch' };
+  }
+  if (a.choice === 'other') return { ...base, result: 'miss', reason: 'other_chosen' };
+  const hit = a.choice === pred;
+  return { ...base, result: hit ? 'hit' : 'miss', reason: hit ? 'choice_match' : 'choice_mismatch' };
+}
+
+// Driver judgement -> final score entry. skip = prediction stands (result
+// stays "provisional" in value but is FINAL: provisional=false — it is not a
+// hit and never counts toward sharpness hits). strike removes the axis.
+export function judgementScore(judgement: string, reason: string | undefined, answer: AnswerPayload | undefined): ScorePayload | GateError {
+  const key = answer?.question_key || '';
+  switch (judgement) {
+    case 'hit': return { question_key: key, result: 'hit', provisional: false, reason: reason || 'driver_judgement', source: 'driver' };
+    case 'miss': return { question_key: key, result: 'miss', provisional: false, reason: reason || 'driver_judgement', source: 'driver' };
+    case 'skip':
+      if (!answer?.skipped) return { code: 'bad_judgement', message: 'skip judgement requires a skipped answer', question_key: key };
+      return { question_key: key, result: 'provisional', provisional: false, reason: 'skip_prediction_stands', source: 'driver' };
+    case 'strike': return { question_key: key, result: 'struck', provisional: false, reason: reason || 'axis_struck', source: 'driver' };
+    default: return { code: 'bad_judgement', message: `judgement must be hit|miss|skip|strike, got: ${judgement}`, question_key: key };
+  }
+}
+
+export interface EntryLike { id: number; kind: string; payload: any }
+export interface QuestionState {
+  key: string; question: QuestionPayload; askedId: number;
+  answer?: AnswerPayload; answerId?: number;
+  score?: ScorePayload; scoreId?: number;
+  state: 'open' | 'answered' | 'skipped' | 'struck';
+}
+
+// Derive per-question state from the append-only record (latest answer and
+// latest score per key win; entries are never edited).
+export function deriveQuestions(entries: EntryLike[]): QuestionState[] {
+  const byKey = new Map<string, QuestionState>();
+  const order: QuestionState[] = [];
+  for (const e of entries) {
+    if (e.kind === 'question' && e.payload?.key) {
+      if (!byKey.has(e.payload.key)) { const qs: QuestionState = { key: e.payload.key, question: e.payload, askedId: e.id, state: 'open' }; byKey.set(e.payload.key, qs); order.push(qs); }
+    } else if (e.kind === 'answer' && e.payload?.question_key) {
+      const qs = byKey.get(e.payload.question_key); if (qs) { qs.answer = e.payload; qs.answerId = e.id; }
+    } else if (e.kind === 'score' && e.payload?.question_key) {
+      const qs = byKey.get(e.payload.question_key); if (qs) { qs.score = e.payload; qs.scoreId = e.id; }
+    }
+  }
+  for (const qs of order) {
+    if (qs.score?.result === 'struck') qs.state = 'struck';
+    else if (qs.answer?.skipped) qs.state = 'skipped';
+    else if (qs.answer) qs.state = 'answered';
+    else qs.state = 'open';
+  }
+  return order;
+}
+
+export interface Sharpness { sharp: boolean; answered_load_bearing: number; recent_scores: ScorePayload[]; errors: GateError[] }
+
+// Deterministic sharpness gate: >=3 answered load-bearing, the 3 most recent
+// load-bearing scores all FINAL hits, no load-bearing question open or skipped.
+export function sharpnessGate(questions: QuestionState[]): Sharpness {
+  const errors: GateError[] = [];
+  const lb = questions.filter((q) => q.question.load_bearing);
+  const answered = lb.filter((q) => q.state === 'answered');
+  if (answered.length < 3) errors.push({ code: 'sharp_min_answered', message: `sharpness needs >=3 answered load-bearing questions, got ${answered.length}` });
+  const openOrSkipped = lb.filter((q) => q.state === 'open' || q.state === 'skipped');
+  if (openOrSkipped.length) errors.push({ code: 'sharp_open_or_skipped', message: `load-bearing questions open or skipped: ${openOrSkipped.map((q) => q.key).join(', ')}` });
+  const scored = answered.filter((q) => q.score).sort((a, b) => (a.scoreId || 0) - (b.scoreId || 0));
+  const recent = scored.slice(-3).map((q) => q.score as ScorePayload);
+  if (recent.length < 3 || recent.some((s) => !(s.result === 'hit' && s.provisional === false)))
+    errors.push({ code: 'sharp_recent_hits', message: 'the 3 most recent load-bearing scores must all be final (non-provisional) hits' });
+  return { sharp: errors.length === 0, answered_load_bearing: answered.length, recent_scores: recent, errors };
+}
+
+// Stable element ids for artifacts: ids are id="..." attributes in HTML.
+export function extractElementIds(content: string): string[] {
+  const ids: string[] = []; const re = /\bid="([^"]+)"/g; let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) ids.push(m[1]);
+  return ids;
+}
+export function validateArtifactIds(path: string, content: string, previousIds: string[] | null): GateError[] {
+  const errs: GateError[] = [];
+  if (!content.includes('<')) return errs; // non-HTML artifact: no element ids to enforce
+  const ids = extractElementIds(content);
+  if (new Set(ids).size !== ids.length) errs.push({ code: 'duplicate_element_id', message: `artifact ${path} has duplicate element ids` });
+  if (previousIds && previousIds.length) {
+    const have = new Set(ids); const lost = previousIds.filter((id) => !have.has(id));
+    if (lost.length) errs.push({ code: 'element_ids_lost', message: `artifact ${path} rewrite drops stable element ids: ${lost.join(', ')}` });
+  }
+  return errs;
+}
