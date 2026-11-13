@@ -1,3 +1,5 @@
+> **Status (v2, 2026-11-12):** This is the founding brief for v1, kept verbatim below for the record. The current system is v2, specified by `SKILL.md` and implemented by `template/`: one continuous chat thread instead of rounds, no submit button, no email callback (notification is an optional Commit webhook), the sprite's own AI driving by default with full REST/MCP parity for external agents. Where this brief and `SKILL.md` differ, `SKILL.md` wins.
+
 # Decision sprite: brief (Victor, 2026-11-11 — unchanged from the version Muse copied)
 
 ## What

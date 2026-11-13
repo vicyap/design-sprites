@@ -1,23 +1,22 @@
 import Config
 
 test_data =
-  Path.join(System.tmp_dir!(), "decision_sprite_test_#{:erlang.unique_integer([:positive])}")
+  Path.join(System.tmp_dir!(), "design_sprite_test_#{:erlang.unique_integer([:positive])}")
 
 File.mkdir_p!(test_data)
-config :decision_sprite, :data_dir, test_data
+config :design_sprite, :data_dir, test_data
 
-config :decision_sprite, DecisionSprite.Repo,
+config :design_sprite, DesignSprite.Repo,
   database: Path.join(test_data, "app.db"),
   journal_mode: :wal,
   pool_size: 5
 
-config :decision_sprite, DecisionSpriteWeb.Endpoint,
+config :design_sprite, DesignSpriteWeb.Endpoint,
   http: [port: 4002],
   secret_key_base: "test-only-secret-key-base-0123456789abcdef0123456789abcdef0123456789abcde",
   server: false
 
-# Submissions in tests deliver through a controllable stub, never the
-# network. Individual tests override :stub_notifier_result as needed.
-config :decision_sprite, :notifier, DecisionSprite.StubNotifier
+# Tests drive the AI through the stub adapter, never the network.
+config :design_sprite, :ai_adapter, DesignSprite.AI.StubClient
 
 config :logger, level: :warning
