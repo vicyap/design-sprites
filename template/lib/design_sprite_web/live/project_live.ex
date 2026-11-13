@@ -359,9 +359,25 @@ defmodule DesignSpriteWeb.ProjectLive do
 
   defp answer_error_text(:other_text_required), do: "Other needs the text — what is your answer?"
   defp answer_error_text(:choice_required), do: "Pick an option first."
-  defp answer_error_text(:already_answered), do: "That question is already answered."
   defp answer_error_text(:committed), do: "This Project is committed and read-only."
   defp answer_error_text(_), do: "That answer could not be saved."
+
+  # The form values for a question: an in-progress draft wins; for an
+  # already-answered question with no draft, the current (latest)
+  # answer pre-fills the form so changing it starts from where it
+  # stands, not from a blank card.
+  defp effective_draft(%{state: :answered, answer: answer}, draft)
+       when is_map(answer) and map_size(draft) == 0 do
+    %{
+      "choice" => answer["choice"],
+      "choices" => answer["choices"],
+      "other_text" => answer["other_text"],
+      "dialed_value" => answer["dialed_value"],
+      "comment" => answer["comment"]
+    }
+  end
+
+  defp effective_draft(_view, draft), do: draft
 
   defp draft_payload(form) do
     %{
@@ -814,6 +830,9 @@ defmodule DesignSpriteWeb.ProjectLive do
           <%= if @chip do %>
             <span class={@chip.class}>{@chip.text}{if @chip.provisional, do: " (comment pending review)", else: ""}</span>
           <% end %>
+          <%= if @project.status == "open" do %>
+            <button class="link-btn" phx-click="open_question" phx-value-key={@view.key}>Change answer</button>
+          <% end %>
       <% end %>
     </div>
     """
@@ -987,7 +1006,7 @@ defmodule DesignSpriteWeb.ProjectLive do
   end
 
   defp pane_question_render(assigns, view) do
-    draft = assigns.drafts[view.key] || %{}
+    draft = effective_draft(view, assigns.drafts[view.key] || %{})
     assigns = assigns |> assign(:view, view) |> assign(:draft, draft)
 
     ~H"""
@@ -1002,10 +1021,16 @@ defmodule DesignSpriteWeb.ProjectLive do
       <%= if @view.answer["comment"] not in [nil, ""] do %>
         <p class="qcard-comment">“{@view.answer["comment"]}”</p>
       <% end %>
+      <%= if @project.status == "open" do %>
+        <p class="pane-note">
+          Change your answer below — the change is appended as a superseding answer; the original stays in the record as history and only the latest counts.
+        </p>
+      <% end %>
+    <% end %>
+    <%= if @view.state == :struck do %>
+      <p class="pane-note">Out of scope — this axis is off the map.</p>
     <% else %>
-      <%= if @view.state == :struck do %>
-        <p class="pane-note">Out of scope — this axis is off the map.</p>
-      <% else %>
+      <%= if not (@view.state == :answered and @project.status != "open") do %>
         <form phx-change="draft_answer" phx-submit="send_answer" class="answer-form" id={"answer-form-" <> @view.key} phx-hook="DraftFlush">
           <input type="hidden" name="answer[question_key]" value={@view.key} />
           <%= case @view.question["type"] do %>
@@ -1028,7 +1053,7 @@ defmodule DesignSpriteWeb.ProjectLive do
                     <input type="radio" name="answer[choice]" value="other" checked={@draft["choice"] == "other"} /> Other
                   </label>
                   <input type="text" name="answer[other_text]" value={@draft["other_text"]} placeholder="Your answer…" />
-                  <button type="submit" class="btn btn-quiet" disabled={not @am_driver}>Send answer</button>
+                  <button type="submit" class="btn btn-quiet" disabled={not @am_driver}>{if @view.state == :answered, do: "Save changed answer", else: "Send answer"}</button>
                 </div>
               </div>
             <% "preview" -> %>
@@ -1053,11 +1078,14 @@ defmodule DesignSpriteWeb.ProjectLive do
                 </label>
               </div>
               <input type="text" name="answer[other_text]" value={@draft["other_text"]} placeholder="Your answer, if Other…" />
-              <div class="dial">
-                <label class="comment-label" for={"dial-" <> @view.key}>
-                  Dial <span class="comment-hint">(the dialed value is the answer, recorded verbatim)</span>
-                </label>
-                <%= if stops do %>
+              <%!-- The dial renders ONLY when the question actually has dial stops
+                   (every option value numeric). A preview question without dial
+                   stops gets no dial input at all. --%>
+              <%= if stops do %>
+                <div class="dial">
+                  <label class="comment-label" for={"dial-" <> @view.key}>
+                    Dial <span class="comment-hint">(the dialed value is the answer, recorded verbatim)</span>
+                  </label>
                   <input
                     type="range"
                     id={"dial-" <> @view.key}
@@ -1067,16 +1095,16 @@ defmodule DesignSpriteWeb.ProjectLive do
                     value={dial_initial(@view.question, @draft, stops)}
                     phx-hook="Dial"
                   />
-                <% end %>
-                <input
-                  type="text"
-                  name="answer[dialed_value]"
-                  value={@draft["dialed_value"]}
-                  placeholder="Dialed value…"
-                  aria-label="Dialed value"
-                />
-              </div>
-              <button type="submit" class="btn btn-gold" disabled={not @am_driver}>Send answer</button>
+                  <input
+                    type="text"
+                    name="answer[dialed_value]"
+                    value={@draft["dialed_value"]}
+                    placeholder="Dialed value…"
+                    aria-label="Dialed value"
+                  />
+                </div>
+              <% end %>
+              <button type="submit" class="btn btn-gold" disabled={not @am_driver}>{if @view.state == :answered, do: "Save changed answer", else: "Send answer"}</button>
             <% "multi" -> %>
               <div class="options">
                 <%= for o <- @view.question["options"] do %>
@@ -1096,7 +1124,7 @@ defmodule DesignSpriteWeb.ProjectLive do
                 </label>
                 <input type="text" name="answer[other_text]" value={@draft["other_text"]} placeholder="Your answer, if Other…" />
               </div>
-              <button type="submit" class="btn btn-gold" disabled={not @am_driver}>Send answer</button>
+              <button type="submit" class="btn btn-gold" disabled={not @am_driver}>{if @view.state == :answered, do: "Save changed answer", else: "Send answer"}</button>
           <% end %>
 
           <label class="comment-label" for="answer-comment">Comment <span class="comment-hint">(part of the answer)</span></label>
@@ -1110,14 +1138,16 @@ defmodule DesignSpriteWeb.ProjectLive do
           >{@draft["comment"]}</textarea>
         </form>
 
-        <div class="pane-actions">
-          <button class="link-btn" phx-click="skip_question" phx-value-key={@view.key} disabled={not @am_driver}>
-            Skip — the prediction stands
-          </button>
-          <button class="link-btn link-danger" phx-click="strike_question" phx-value-key={@view.key} disabled={not @am_driver}>
-            {if @strike_arm == @view.key, do: "Sure? Strike this axis for good", else: "Out of scope"}
-          </button>
-        </div>
+        <%= if @view.state != :answered do %>
+          <div class="pane-actions">
+            <button class="link-btn" phx-click="skip_question" phx-value-key={@view.key} disabled={not @am_driver}>
+              Skip — the prediction stands
+            </button>
+            <button class="link-btn link-danger" phx-click="strike_question" phx-value-key={@view.key} disabled={not @am_driver}>
+              {if @strike_arm == @view.key, do: "Sure? Strike this axis for good", else: "Out of scope"}
+            </button>
+          </div>
+        <% end %>
       <% end %>
     <% end %>
     """

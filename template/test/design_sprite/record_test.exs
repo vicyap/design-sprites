@@ -80,14 +80,60 @@ defmodule DesignSprite.RecordTest do
     assert Record.tally().struck == 1
   end
 
-  test "answering twice is refused — the record never overwrites a word" do
+  test "re-answering appends a superseding answer — the record never overwrites a word" do
+    ask("layout")
+    assert {:ok, %{answer: first, score: first_score}} = answer("layout", %{"choice" => "alpha"})
+    assert first.payload["superseding"] == false
+    assert first_score.payload["result"] == "hit"
+
+    assert {:ok, %{answer: second, score: second_score}} = answer("layout", %{"choice" => "beta"})
+    assert second.payload["superseding"] == true
+    assert second_score.payload["superseding"] == true
+    assert second_score.payload["result"] == "miss"
+
+    # BOTH answers and BOTH scores stay in the log, in order.
+    answers = Enum.filter(Record.entries(), &(&1.kind == "answer"))
+    assert Enum.map(answers, & &1.payload["choice"]) == ["alpha", "beta"]
+    scores = Enum.filter(Record.entries(), &(&1.kind == "score"))
+    assert Enum.map(scores, & &1.payload["result"]) == ["hit", "miss"]
+
+    # Derived views read the LATEST only: one answered question,
+    # tally reflects the second answer's miss, not the first hit.
+    view = Record.question_view("layout")
+    assert view.state == :answered
+    assert view.answer["choice"] == "beta"
+    assert view.score["result"] == "miss"
+    assert Record.tally() == %{hits: 0, misses: 1, answered: 1, open: 0, skipped: 0, struck: 0}
+
+    # The transcript marks the superseding answer for the AI rebuild.
+    assert Record.transcript_text() =~ "superseding"
+  end
+
+  test "a comment on a re-answer makes the new score provisional until judged" do
     ask("layout")
     assert {:ok, _} = answer("layout", %{"choice" => "alpha"})
-    assert {:error, :already_answered} = answer("layout", %{"choice" => "beta"})
+    assert Record.provisional_question_keys() == []
 
-    answers = Enum.filter(Record.entries(), &(&1.kind == "answer"))
-    assert length(answers) == 1
-    assert hd(answers).payload["choice"] == "alpha"
+    assert {:ok, %{score: score}} =
+             answer("layout", %{"choice" => "alpha", "comment" => "alpha, but denser"})
+
+    assert score.payload["provisional"] == true
+    assert Record.provisional_question_keys() == ["layout"]
+
+    assert {:ok, _} = Record.supersede_score("layout", "miss", "comment", "ai")
+    assert Record.provisional_question_keys() == []
+    assert Record.tally().misses == 1
+  end
+
+  test "re-answering after Commit is refused and writes nothing" do
+    ask("layout")
+    assert {:ok, _} = answer("layout", %{"choice" => "alpha"})
+    assert {:ok, _} = Record.commit("human")
+    entries_before = length(Record.entries())
+
+    assert {:error, :committed} = answer("layout", %{"choice" => "beta"})
+    assert length(Record.entries()) == entries_before
+    assert Record.question_view("layout").answer["choice"] == "alpha"
   end
 
   test "Other without text is refused" do
@@ -194,6 +240,23 @@ defmodule DesignSprite.RecordTest do
     ask("four")
     assert {:ok, _} = answer("four", %{"choice" => "beta"})
     refute Record.sharpness_ready?()
+  end
+
+  test "the sharpness gate derives from the latest answers only" do
+    for key <- ["one", "two", "three"] do
+      ask(key)
+      assert {:ok, _} = answer(key, %{"choice" => "alpha"})
+    end
+
+    assert Record.sharpness_ready?()
+
+    # Superseding one hit with a miss breaks the gate…
+    assert {:ok, _} = answer("three", %{"choice" => "beta"})
+    refute Record.sharpness_ready?()
+
+    # …and superseding it back to a hit restores it.
+    assert {:ok, _} = answer("three", %{"choice" => "alpha"})
+    assert Record.sharpness_ready?()
   end
 
   test "a skipped load-bearing question blocks sharpness until it is struck" do

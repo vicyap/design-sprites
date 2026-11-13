@@ -9,7 +9,12 @@ defmodule DesignSprite.Record do
   Question state is DERIVED from the log, never stored: a question is
   open until an answer lands; a skip leaves the prediction standing
   (and the question may still be answered later); a strike ("out of
-  scope") removes the axis and is terminal for that question.
+  scope") removes the axis and is terminal for that question. While
+  the Project is open an answered question may be RE-answered: the
+  new answer is a superseding entry appended to the log (the original
+  answer and its score stay in history, untouched), and every derived
+  view — question state, tally, sharpness gate — reads the LATEST
+  answer and score only.
   """
 
   require Ash.Query
@@ -220,9 +225,16 @@ defmodule DesignSprite.Record do
   # Answers, skips, strikes, scores
 
   @doc """
-  Answer an open (or skipped) question. Appends the answer entry and,
-  atomically in sequence, its deterministic score entry. The draft for
-  the question is destroyed. Returns {:ok, %{answer: e, score: e}}.
+  Answer an open (or skipped) question — or RE-answer an answered
+  one while the Project is open. Appends the answer entry and, in
+  sequence, its deterministic score entry. A re-answer is marked
+  `"superseding" => true`: nothing is overwritten, the original
+  answer/score remain in the log as history, and derived views read
+  the latest answer/score only. A comment on a re-answer makes the
+  new score provisional, exactly like a first answer (D6/D18). After
+  Commit, re-answering is refused with {:error, :committed} like
+  every other design-content write. The draft for the question is
+  destroyed. Returns {:ok, %{answer: e, score: e}}.
   """
   def answer_question(key, attrs, actor) when actor in ["human", "agent"] do
     view = question_view(key)
@@ -231,16 +243,14 @@ defmodule DesignSprite.Record do
       view == nil ->
         {:error, :question_not_found}
 
-      view.state == :struck ->
-        {:error, :question_struck}
-
-      view.state == :answered ->
-        {:error, :already_answered}
-
       committed?() ->
         {:error, :committed}
 
+      view.state == :struck ->
+        {:error, :question_struck}
+
       true ->
+        superseding? = view.state == :answered
         attrs = normalize_answer_attrs(view.question, attrs)
 
         case validate_answer(view.question, attrs) do
@@ -251,7 +261,8 @@ defmodule DesignSprite.Record do
               "choices" => attrs["choices"],
               "other_text" => attrs["other_text"],
               "dialed_value" => dialed_value(view.question, attrs),
-              "comment" => attrs["comment"]
+              "comment" => attrs["comment"],
+              "superseding" => superseding?
             }
 
             with {:ok, answer} <- append("answer", actor, nil, payload),
@@ -400,7 +411,8 @@ defmodule DesignSprite.Record do
     payload =
       Map.merge(score, %{
         "question_key" => question["key"],
-        "source" => "deterministic"
+        "source" => "deterministic",
+        "superseding" => answer_payload["superseding"] == true
       })
 
     append("score", "system", nil, payload)
@@ -706,7 +718,8 @@ defmodule DesignSprite.Record do
       |> Enum.reject(fn {_k, v} -> v == nil or v == "" end)
       |> Enum.map(fn {k, v} -> "#{k}: #{v}" end)
 
-    "A(#{p["question_key"]}): " <> Enum.join(parts, " | ")
+    marker = if p["superseding"], do: " [superseding — latest answer; earlier answers are history]", else: ""
+    "A(#{p["question_key"]})#{marker}: " <> Enum.join(parts, " | ")
   end
 
   defp render_entry_body(%Entry{kind: "score", payload: p}) do

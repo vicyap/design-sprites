@@ -81,7 +81,7 @@ defmodule DesignSpriteWeb.LiveTest do
     assert render(view) =~ "Keep it to one screen, please."
   end
 
-  test "a preview question renders its variants side by side as sandboxed frames, with a dial", %{conn: conn} do
+  test "a preview question renders its variants as sandboxed frames, with a dial when it has dial stops", %{conn: conn} do
     {:ok, _} = Record.create_project("Design a settings page")
 
     q =
@@ -103,13 +103,80 @@ defmodule DesignSpriteWeb.LiveTest do
     html = render(view)
     assert html =~ "variant-matrix"
     # Each variant preview is its own sandboxed frame (no style bleed,
-    # no script execution), presented side by side in the matrix.
+    # no script execution), one full-width card per option.
     assert length(String.split(html, "srcdoc=")) - 1 == 3
     assert html =~ "sandbox=\"\""
-    # Numeric stops get a slider; the dialed value field rides along.
+    # Numeric stops ARE dial stops: the slider + dialed value field show.
     assert html =~ "type=\"range\""
     assert html =~ "answer[dialed_value]"
     assert html =~ "phx-hook=\"Dial\""
+  end
+
+  test "a preview question without dial stops renders NO dial input", %{conn: conn} do
+    {:ok, _} = Record.create_project("Design a settings page")
+
+    q =
+      TestSupport.question("layout_style", %{
+        "type" => "preview",
+        "options" => [
+          %{"value" => "stacked", "label" => "Stacked", "preview" => "<p>Stacked</p>"},
+          %{"value" => "grid", "label" => "Grid", "preview" => "<p>Grid</p>"}
+        ],
+        "prediction" => "stacked"
+      })
+
+    {:ok, _} = Record.post_question("ai", q)
+
+    {:ok, view, _html} = live(conn, "/")
+    view |> element(".qcard button", "Answer") |> render_click()
+
+    html = render(view)
+    assert html =~ "variant-matrix"
+    # Non-numeric option values are not dial stops — no dial at all.
+    refute html =~ "answer[dialed_value]"
+    refute html =~ "type=\"range\""
+    refute html =~ "phx-hook=\"Dial\""
+  end
+
+  test "preview variants stack vertically and the composer follows the chat column (CSS)", %{conn: _conn} do
+    css = File.read!(Path.join([File.cwd!(), "priv", "static", "app.css"]))
+
+    # Stacked, full-width preview cards (no auto-fit side-by-side grid).
+    assert css =~ ".variant-matrix"
+    assert css =~ "flex-direction: column"
+    refute css =~ "repeat(auto-fit"
+
+    # The composer is capped at the chat column's 65ch, centered with
+    # the pane closed and left-aligned (margin 0) when it opens.
+    assert css =~ ".shell-pane .composer { margin: 0; }"
+    composer_block = css |> String.split(".composer {") |> Enum.at(1) |> String.split("}") |> hd()
+    assert composer_block =~ "max-width: 65ch"
+    assert composer_block =~ "margin: 0 auto"
+  end
+
+  test "an answered question can be re-answered from the pane — latest wins, history kept", %{conn: conn} do
+    {:ok, _} = Record.create_project("Design a settings page")
+    {:ok, _} = Record.post_question("ai", TestSupport.question("layout"))
+    StubClient.set_replies([~s({"messages":[],"questions":[],"model":null,"artifact":null,"sharp":false})])
+
+    {:ok, view, _html} = live(conn, "/")
+    view |> element(".qcard button", "Answer") |> render_click()
+    view |> element(".option-row", "Alpha") |> render_click()
+    assert Record.question_view("layout").score["result"] == "hit"
+
+    # The answered card offers the edit; the pane reopens pre-filled.
+    assert render(view) =~ "Change answer"
+    view |> element("button", "Change answer") |> render_click()
+    assert render(view) =~ "Save changed answer"
+
+    view |> element(".option-row", "Beta") |> render_click()
+
+    view_state = Record.question_view("layout")
+    assert view_state.answer["choice"] == "beta"
+    assert view_state.answer["superseding"] == true
+    assert view_state.score["result"] == "miss"
+    assert Record.tally() == %{hits: 0, misses: 1, answered: 1, open: 0, skipped: 0, struck: 0}
+    assert length(Enum.filter(Record.entries(), &(&1.kind == "answer"))) == 2
   end
 
   test "a dialed value typed in the pane is the answer, verbatim, even between stops", %{conn: conn} do

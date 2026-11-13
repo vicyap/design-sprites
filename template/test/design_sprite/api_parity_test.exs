@@ -104,6 +104,34 @@ defmodule DesignSprite.ApiParityTest do
     assert {:ok, _} = Api.release_driver(@me)
   end
 
+  test "re-answering through the Api supersedes; after Commit it is refused" do
+    assert {:ok, _} = Api.acquire_driver(@me)
+    assert {:ok, _} = Api.create_project(@me, "Design a settings page")
+    assert {:ok, _} = Api.post_question(@me, TestSupport.question("layout"))
+
+    assert {:ok, %{"score" => s1}} =
+             Api.answer_question(@me, "layout", %{"choice" => "alpha", "actor" => "agent"})
+
+    assert s1["payload"]["result"] == "hit"
+
+    assert {:ok, %{"answer" => a2, "score" => s2}} =
+             Api.answer_question(@me, "layout", %{"choice" => "beta", "actor" => "agent"})
+
+    assert a2["payload"]["superseding"] == true
+    assert s2["payload"]["result"] == "miss"
+
+    # State reflects ONLY the latest; both answers remain in history.
+    assert {:ok, state} = Api.state()
+    assert state["tally"] == %{"answered" => 1, "hits" => 0, "misses" => 1, "open" => 0, "skipped" => 0, "struck" => 0}
+    answers = Enum.filter(state["entries"], &(&1["kind"] == "answer"))
+    assert Enum.map(answers, & &1["payload"]["choice"]) == ["alpha", "beta"]
+
+    assert {:ok, _} = Api.commit(@me)
+    assert {:error, :committed} = Api.answer_question(@me, "layout", %{"choice" => "alpha", "actor" => "agent"})
+
+    assert {:ok, _} = Api.release_driver(@me)
+  end
+
   test "skip and strike through the Api follow the record rules" do
     assert {:ok, _} = Api.acquire_driver(@me)
     assert {:ok, _} = Api.create_project(@me, "Design a settings page")

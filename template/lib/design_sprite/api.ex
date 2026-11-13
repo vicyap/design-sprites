@@ -140,6 +140,12 @@ defmodule DesignSprite.Api do
     end)
   end
 
+  @doc """
+  Answer a question — or, while the Project is open, RE-answer an
+  already-answered one: the new answer is appended as a superseding
+  entry and only the latest answer/score count (Record.answer_question).
+  After Commit this returns {:error, :committed}, like the web.
+  """
   def answer_question(driver_id, key, attrs) do
     actor = actor_or(attrs, "human")
 

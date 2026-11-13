@@ -275,6 +275,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   padding: 0.8rem 1rem;
 }
 
+/* The composer sizes and positions to the CHAT COLUMN, exactly like
+   .chat above: same 65ch width, same 1rem inset, centered when the
+   pane is closed and left-aligned (margin 0) when the pane opens and
+   the chat shifts left. It never spans the full window width. */
 .composer {
   border-top: 1px solid var(--hairline);
   background: var(--paper-raised);
@@ -285,10 +289,23 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   align-items: flex-end;
   position: sticky;
   bottom: 0;
+  width: 100%;
+  max-width: 65ch;
+  margin: 0 auto;
 }
+.shell-pane .composer { margin: 0; }
 .composer .chips { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 0.4rem; }
 .composer-box { flex: 1; min-width: 220px; }
-.committed-note { color: var(--muted); text-align: center; padding: 1rem; border-top: 1px solid var(--hairline); }
+.committed-note {
+  color: var(--muted);
+  text-align: center;
+  padding: 1rem;
+  border-top: 1px solid var(--hairline);
+  width: 100%;
+  max-width: 65ch;
+  margin: 0 auto;
+}
+.shell-pane .committed-note { margin: 0; }
 
 /* ---------- pane ---------- */
 
@@ -365,18 +382,22 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .snapshot-form .btn { margin-top: 0.9rem; }
 .snapshot-html { resize: vertical; overflow: auto; font-family: "JetBrains Mono", monospace; font-size: 0.8rem; }
 
-/* ---------- preview questions: variant matrix + dial ---------- */
+/* ---------- preview questions: stacked variants + dial ---------- */
 
+/* Preview options stack VERTICALLY: one full-width card per option,
+   so each mock renders at the pane's full width, legible and
+   untruncated — never squeezed side by side. */
 .variant-matrix {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
   margin: 0.9rem 0;
 }
 .variant {
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+  width: 100%;
   padding: 0.6rem;
   background: var(--paper);
   border: 1px solid var(--hairline);
@@ -389,6 +410,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .variant-head { display: flex; gap: 0.5rem; align-items: flex-start; }
 .variant-frame {
   display: block;
+  width: 100%;
   border: 1px dashed var(--hairline);
   border-radius: 4px;
   overflow: hidden;
@@ -397,7 +419,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .variant-frame iframe {
   display: block;
   width: 100%;
-  height: 150px;
+  height: 320px;
   border: none;
   pointer-events: none;
 }
