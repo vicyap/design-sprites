@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, FormEvent, type CSSProperties } from 'react';
-import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, LockKey, CheckCircle, SealCheck } from '@phosphor-icons/react';
+import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, LockKey, CheckCircle, SealCheck, ArrowRight } from '@phosphor-icons/react';
 
 // Design Sprites v3 — full UI (P3, descoped per Amendment 2: chat + decisions
 // only; NO artifact pane or inspector). v3.5 P2 adds the preview question
@@ -36,8 +36,13 @@ const srcDocFor = (html: string) => `<meta name="color-scheme" content="light da
 
 function scoreLabel(s: any): string {
   if (!s) return '';
-  const state = s.result === 'struck' ? 'Struck' : s.provisional ? `${cap(s.result)} (provisional)` : `${cap(s.result)} (final)`;
-  return state;
+  if (s.result === 'struck') return 'Struck';
+  // A skipped question's score carries result 'provisional' at BOTH stages:
+  // deterministically the prediction is left standing, and a driver 'skip'
+  // judgement confirms it. Name that in plain words — 'Provisional
+  // (provisional)' / 'Provisional (final)' contradicted themselves (P5 audit).
+  if (s.result === 'provisional') return s.provisional ? 'Prediction stands (provisional)' : 'Prediction stands (final)';
+  return s.provisional ? `${cap(s.result)} (provisional)` : `${cap(s.result)} (final)`;
 }
 function cap(s: string) { return s ? s[0].toUpperCase() + s.slice(1) : s; }
 
@@ -51,6 +56,29 @@ export default function Page() {
   const [fileContent, setFileContent] = useState<{ path: string; content: string; version?: number } | null>(null);
   const [confirmCommit, setConfirmCommit] = useState(false);
   const [notice, setNotice] = useState('');
+  // Overlay focus management (P5 accessibility audit): opening the drawer or
+  // the pane moves focus to its close button; closing returns focus to the
+  // element that opened it. Only the null->open and open->null transitions
+  // act, so switching questions inside the pane never yanks focus.
+  const paneRef = useRef<HTMLElement | null>(null);
+  const drawerRef = useRef<HTMLElement | null>(null);
+  const restoreFocusRef = useRef<Element | null>(null);
+  const prevPaneRef = useRef<Pane>(null);
+  const prevNavRef = useRef(false);
+  useEffect(() => {
+    const wasOpen = !!prevPaneRef.current || prevNavRef.current;
+    const isOpen = !!pane || navOpen;
+    if (isOpen && !wasOpen) {
+      restoreFocusRef.current = document.activeElement;
+      const root = pane ? paneRef.current : drawerRef.current;
+      root?.querySelector<HTMLElement>('button[aria-label="Close pane"], button[aria-label="Close menu"]')?.focus();
+    } else if (!isOpen && wasOpen) {
+      (restoreFocusRef.current as HTMLElement | null)?.focus?.();
+      restoreFocusRef.current = null;
+    }
+    prevPaneRef.current = pane;
+    prevNavRef.current = navOpen;
+  }, [pane, navOpen]);
 
   const load = useCallback(async () => {
     const r = await fetch('/api/state', { cache: 'no-store' });
@@ -73,6 +101,24 @@ export default function Page() {
   const committed = ui?.project?.status === 'committed';
   const qByKey = new Map((ui?.questions || []).map((q) => [q.key, q]));
 
+  // v3.6 F1/F2: questions stay in thread order (deriveQuestions preserves
+  // record order). Progress counts answered + skipped only; the navigator
+  // and the batch control show status/counts only, never answer content.
+  const questions = ui?.questions || [];
+  const answeredCount = questions.filter((q) => q.state === 'answered' || q.state === 'skipped').length;
+  const statusWord = (s: string) => (s === 'open' ? 'Open' : s === 'answered' ? 'Answered' : s === 'skipped' ? 'Skipped' : s === 'struck' ? 'Struck' : cap(s));
+  function openQuestion(key: string) { setNotice(''); setPane({ type: 'question', key }); }
+  // Next still-open question after `key` in thread order, wrapping to the
+  // first open question before it; the current question itself never counts
+  // as its own "next". Null when no other question is open.
+  function nextOpenKeyAfter(key: string): string | null {
+    const i = questions.findIndex((q) => q.key === key);
+    if (i < 0) return questions.find((q) => q.state === 'open')?.key ?? null;
+    const ordered = [...questions.slice(i + 1), ...questions.slice(0, i)];
+    return ordered.find((q) => q.state === 'open')?.key ?? null;
+  }
+  const anyOpen = questions.some((q) => q.state === 'open');
+
   async function send(e: FormEvent) {
     e.preventDefault();
     if (!text.trim() || committed) return;
@@ -93,11 +139,14 @@ export default function Page() {
     if (r.ok) { setConfirmCommit(false); await load(); }
   }
 
+  const paneNextKey = pane?.type === 'question' ? nextOpenKeyAfter(pane.key) : null;
+  const paneIsQuestion = pane?.type === 'question' && qByKey.has(pane.key);
+
   const nav = ui && (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <div>
         <p style={eyebrow}>Project</p>
-        <h2 style={{ fontSize: 17, lineHeight: 1.3, margin: '6px 0', ...wrap }}>{ui.project.title || 'Untitled project'}</h2>
+        <p style={{ fontSize: 17, fontWeight: 600, lineHeight: 1.3, margin: '6px 0', ...wrap }}>{ui.project.title || 'Untitled project'}</p>
         {ui.project.want && <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, fontSize: 14, ...wrap }}>{ui.project.want}</p>}
       </div>
       <div>
@@ -108,11 +157,25 @@ export default function Page() {
         </p>
       </div>
       <div>
+        <p style={eyebrow}>Questions</p>
+        <ul data-nav-questions style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
+          {questions.map((q) => (
+            <li key={q.key}>
+              <button data-nav-question={q.key} data-question-status={q.state} onClick={() => { openQuestion(q.key); setNavOpen(false); }} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', width: '100%', textAlign: 'left', minHeight: 44, padding: '8px', borderRadius: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 14 }}>
+                <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4, ...wrap }}>{q.question?.prompt || q.key}</span>
+                <span style={{ flexShrink: 0, fontSize: 12, color: 'var(--muted-foreground)', paddingTop: 2 }}>{statusWord(q.state)}</span>
+              </button>
+            </li>
+          ))}
+          {questions.length === 0 && <li style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>No questions yet.</li>}
+        </ul>
+      </div>
+      <div>
         <p style={eyebrow}>Files</p>
         <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
           {explorer.map((f) => (
             <li key={f.path}>
-              <button onClick={() => { openFile(f.path); setNavOpen(false); }} style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%', textAlign: 'left', minHeight: 40, padding: '6px 8px', borderRadius: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 14 }}>
+              <button onClick={() => { openFile(f.path); setNavOpen(false); }} style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%', textAlign: 'left', minHeight: 44, padding: '6px 8px', borderRadius: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 14 }}>
                 <FileText size={17} /> <span style={{ ...wrap, minWidth: 0 }}>{f.path}</span>{f.version ? <span style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>v{f.version}</span> : null}
               </button>
             </li>
@@ -135,13 +198,13 @@ export default function Page() {
   );
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', height: '100dvh', overflow: 'hidden' }}>
       {/* Left navigator — project structure (desktop) */}
-      <aside className="hidden lg:block" style={{ width: 280, flexShrink: 0, borderRight: '1px solid var(--border)', padding: '20px 16px', position: 'sticky', top: 0, height: '100vh', overflowY: 'auto' }}>{nav}</aside>
+      <aside className="hidden lg:block" style={{ width: 280, flexShrink: 0, borderRight: '1px solid var(--border)', padding: '20px 16px', height: '100%', overflowY: 'auto' }}>{nav}</aside>
       {/* Mobile drawer */}
       {navOpen && (
         <div style={{ position: 'fixed', inset: 0, zIndex: 40, background: 'var(--scrim)' }} onClick={() => setNavOpen(false)}>
-          <aside className="lg:hidden" style={{ width: 280, maxWidth: '85vw', height: '100%', background: 'var(--background)', padding: '20px 16px', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+          <aside ref={drawerRef} role="dialog" aria-modal="true" aria-label="Menu" className="lg:hidden" style={{ width: 280, maxWidth: '85vw', height: '100%', background: 'var(--background)', padding: '20px 16px', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
             <button aria-label="Close menu" onClick={() => setNavOpen(false)} style={{ minHeight: 44, minWidth: 44, background: 'transparent', border: 'none', cursor: 'pointer' }}><X size={22} /></button>
             {nav}
           </aside>
@@ -149,14 +212,16 @@ export default function Page() {
       )}
 
       {/* Centre chat thread */}
-      <main style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'center' }}>
-        <div style={{ width: '100%', maxWidth: '65ch', padding: '24px 16px 48px' }}>
+      <main style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'center', height: '100%', overflow: 'hidden' }}>
+        <div style={{ width: '100%', maxWidth: '65ch', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+          <div data-thread-scroll style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 16px 16px' }}>
           <header style={{ borderBottom: '1px solid var(--border)', paddingBottom: 16, marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button aria-label="Open menu" className="lg:hidden" onClick={() => setNavOpen(true)} style={{ minHeight: 44, minWidth: 44, background: 'transparent', border: 'none', cursor: 'pointer' }}><List size={22} /></button>
               <p style={eyebrow}>Design Sprites v3</p>
             </div>
             <h1 style={{ fontSize: 28, lineHeight: 1.2, margin: '8px 0', ...wrap }}>{ui?.project?.title || 'Project stream'}</h1>
+            {ui && <p data-progress style={{ fontSize: 14, color: 'var(--muted-foreground)', margin: '0 0 10px' }}>{answeredCount} of {questions.length} answered</p>}
             {committed ? (
               <div role="status" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--warning-soft)', padding: '10px 12px', borderRadius: 8 }}>
                 <LockKey size={20} /><span>Committed — this record is frozen read-only.</span>
@@ -172,18 +237,21 @@ export default function Page() {
             {!ui && <p>Loading the record…</p>}
             {ui && ui.entries.length === 0 && <p>No entries yet. Send the first message below — it will appear here verbatim.</p>}
             {ui?.entries.map((en) => (
-              <ThreadEntry key={en.id} en={en} qByKey={qByKey} onOpenQuestion={(key) => { setNotice(''); setPane({ type: 'question', key }); }} onOpenFile={openFile} />
+              <ThreadEntry key={en.id} en={en} qByKey={qByKey} onOpenQuestion={openQuestion} onOpenFile={openFile} />
             ))}
           </section>
+          </div>
 
-          <form onSubmit={send} style={{ marginTop: 20, display: 'flex', gap: 8 }}>
+          <div data-chat-composer style={{ flexShrink: 0, borderTop: '1px solid var(--border)', background: 'var(--background)', padding: '12px 16px 16px' }}>
+          <form onSubmit={send} style={{ display: 'flex', gap: 8 }}>
             <label style={{ flex: 1 }}>
               <span style={{ display: 'block', fontSize: 13, marginBottom: 6 }}>Message</span>
               <input aria-label="Message" value={text} disabled={!!committed} onChange={(e) => setText(e.target.value)} placeholder={committed ? 'Committed — read-only' : 'Type a message — stored verbatim'} style={{ width: '100%', minHeight: 48, padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)' }} />
             </label>
             <button type="submit" disabled={!!committed} style={{ minHeight: 48, minWidth: 48, padding: '0 16px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-foreground)', display: 'flex', gap: 6, alignItems: 'center', border: 'none', cursor: 'pointer', alignSelf: 'flex-end', opacity: committed ? 0.5 : 1 }}>Send <PaperPlaneTilt size={18} /></button>
           </form>
-          {err && <p role="alert" style={{ color: 'var(--destructive)' }}>{err}</p>}
+          {err && <p role="alert" style={{ color: 'var(--destructive)', margin: '8px 0 0' }}>{err}</p>}
+          </div>
         </div>
       </main>
 
@@ -198,18 +266,35 @@ export default function Page() {
           so mobile browser chrome / the on-screen keyboard shrink the pane
           instead of pushing its footer off-screen. */}
       {pane && (
-        <aside style={{ width: 380, maxWidth: '92vw', flexShrink: 0, borderLeft: '1px solid var(--border)', padding: '20px 16px', height: '100dvh', overflowY: 'auto', background: 'var(--background)' }} className="max-lg:fixed max-lg:right-0 max-lg:top-0 max-lg:z-30 max-lg:shadow-xl lg:sticky lg:top-0">
-          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+        <aside ref={paneRef} role="dialog" aria-modal="true" aria-label={pane.type === 'question' ? 'Question' : 'File'} style={{ width: 380, maxWidth: '92vw', flexShrink: 0, borderLeft: '1px solid var(--border)', height: '100dvh', overflow: 'hidden', background: 'var(--background)', display: 'flex', flexDirection: 'column' }} className="max-lg:fixed max-lg:right-0 max-lg:top-0 max-lg:z-30 max-lg:shadow-xl lg:sticky lg:top-0">
+          <div style={{ display: 'flex', justifyContent: 'flex-end', flexShrink: 0, padding: '12px 16px 0' }}>
             <button aria-label="Close pane" onClick={() => setPane(null)} style={{ minHeight: 44, minWidth: 44, background: 'transparent', border: 'none', cursor: 'pointer' }}><X size={22} /></button>
           </div>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
           {pane.type === 'question' && (() => { const qs = qByKey.get(pane.key); return qs ? (
             <QuestionPane key={pane.key} qs={qs} draft={ui?.drafts.find((d: any) => d.question_key === pane.key)} committed={!!committed} notice={notice} setNotice={setNotice} reload={load} />
           ) : <p>Question not found.</p>; })()}
           {pane.type === 'file' && (
-            <div>
+            <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 20px' }}>
               <p style={eyebrow}>File{fileContent?.version ? ` · v${fileContent.version}` : ''}</p>
               <h2 style={{ fontSize: 17, margin: '6px 0 12px', wordBreak: 'break-all' }}>{pane.path}</h2>
               <pre style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', lineHeight: 1.55, fontSize: 13, background: 'var(--muted)', padding: 12, borderRadius: 8 }}>{fileContent?.content ?? 'Loading…'}</pre>
+            </div>
+          )}
+          </div>
+          {/* v3.6 F1: batch flow footer. Advancing is ALWAYS the human's tap
+              here — saving an answer never moves or closes the pane. When
+              another question is open this is a button to it; when none is
+              open the footer says so in plain words instead. */}
+          {paneIsQuestion && (
+            <div data-next-bar style={{ flexShrink: 0, borderTop: '1px solid var(--border)', background: 'var(--background)', padding: '12px 16px' }}>
+              {paneNextKey ? (
+                <button data-next-open={paneNextKey} onClick={() => openQuestion(paneNextKey)} style={{ width: '100%', minHeight: 48, padding: '0 14px', borderRadius: 8, background: 'var(--muted)', color: 'var(--foreground)', border: 'none', cursor: 'pointer', display: 'flex', gap: 8, alignItems: 'center', justifyContent: 'center', fontSize: 14 }}>Next open question <ArrowRight size={18} /></button>
+              ) : anyOpen ? (
+                <p role="status" style={{ fontSize: 14, margin: 0, textAlign: 'center', padding: '12px 0' }}>No other open questions</p>
+              ) : (
+                <p data-all-answered role="status" style={{ fontSize: 14, margin: 0, textAlign: 'center', padding: '12px 0' }}>All questions answered</p>
+              )}
             </div>
           )}
         </aside>
@@ -344,18 +429,28 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
   }
 
   const answeredDialText = qs.answer?.dial_values ? Object.entries(qs.answer.dial_values).map(([id, v]) => { const d = dials.find((x: any) => x.id === id); return `${d?.label || id}: ${v}${d?.unit ? ` ${d.unit}` : ''}`; }).join(' · ') : '';
+  // The answered view names the chosen options by their LABELS, exactly
+  // like the thread's answer entry does — never the raw values (P5 audit:
+  // the pane showed 'tall' / 'other' where the thread showed the labels).
+  const answeredLabels = qs.answer && !qs.answer.skipped ? (isMulti ? (qs.answer.choices || []) : [qs.answer.choice].filter(Boolean)).map((v: string) => (q.options || []).find((o: any) => o.value === v)?.label || v).join(', ') : '';
+  const answeredOtherSelected = !!qs.answer && (qs.answer.choice === 'other' || (qs.answer.choices || []).includes('other'));
 
-  return (
-    <div>
+  const paneHeader = (
+    <>
       <p style={eyebrow}>Question{qs.question.load_bearing ? ' · load-bearing' : ''}{isPreview ? ' · preview' : ''}</p>
       <h2 style={{ fontSize: 18, lineHeight: 1.35, margin: '8px 0 14px', ...wrap }}>{q.prompt}</h2>
+    </>
+  );
 
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
       {qs.answer ? (
-        <div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 20px' }}>
+          {paneHeader}
           <p style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><CheckCircle size={17} /> Answered</p>
           <p style={{ lineHeight: 1.6, fontSize: 14, ...wrap }}>
-            {qs.answer.skipped ? 'Skipped — prediction stands.' : (isMulti ? (qs.answer.choices || []).join(', ') : qs.answer.choice || '')}
-            {qs.answer.other_text ? `: ${qs.answer.other_text}` : ''}
+            {qs.answer.skipped ? 'Skipped — prediction stands.' : answeredLabels}
+            {answeredOtherSelected && qs.answer.other_text ? `: ${qs.answer.other_text}` : ''}
           </p>
           {answeredDialText ? <p style={{ lineHeight: 1.6, fontSize: 14, ...wrap }}>Dials — {answeredDialText}</p> : null}
           {qs.answer.comment ? <p style={{ lineHeight: 1.6, fontSize: 14, color: 'var(--muted-foreground)', ...wrap }}>Comment: {qs.answer.comment}</p> : null}
@@ -363,7 +458,9 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
           {notice ? <p role="status" style={{ fontSize: 13, marginTop: 10 }}>{notice}</p> : null}
         </div>
       ) : (
-        <form onSubmit={(e) => { e.preventDefault(); submit(false); }}>
+        <form onSubmit={(e) => { e.preventDefault(); submit(false); }} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
+          <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 16px' }}>
+          {paneHeader}
           {isPreview ? (
             <fieldset style={{ border: 'none', margin: 0, padding: 0 }}>
               <legend style={{ fontSize: 13, marginBottom: 8 }}>Choose one preview</legend>
@@ -389,7 +486,7 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
                           disabled={committed}
                           checked={selected}
                           onChange={() => setChoice(v.id)}
-                          style={{ width: 18, height: 18 }}
+                          style={{ width: 18, height: 18, flexShrink: 0 }}
                         />
                         <span style={{ lineHeight: 1.45, ...wrap, minWidth: 0 }}>{v.label}</span>
                       </label>
@@ -411,7 +508,7 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
                     disabled={committed}
                     checked={choice === 'other'}
                     onChange={() => setChoice('other')}
-                    style={{ marginTop: 3, width: 18, height: 18 }}
+                    style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }}
                   />
                   <span style={{ lineHeight: 1.45 }}>Other</span>
                 </label>
@@ -432,7 +529,7 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
                         disabled={committed}
                         checked={selected}
                         onChange={() => { if (isMulti) setChoices(selected ? choices.filter((c) => c !== o.value) : [...choices, o.value]); else setChoice(o.value); }}
-                        style={{ marginTop: 3, width: 18, height: 18 }}
+                        style={{ marginTop: 3, width: 18, height: 18, flexShrink: 0 }}
                       />
                       <span style={{ lineHeight: 1.45, ...wrap, minWidth: 0 }}>{o.label}</span>
                     </label>
@@ -460,7 +557,7 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
                       value={dialValues[d.id] ?? d.default}
                       disabled={committed}
                       onChange={(e) => setDialValues({ ...dialValues, [d.id]: Number(e.target.value) })}
-                      style={{ width: '100%', minHeight: 32 }}
+                      style={{ width: '100%', height: 44, minHeight: 44, cursor: 'pointer' }}
                     />
                   </label>
                 ))}
@@ -478,12 +575,15 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
             <textarea aria-label="Comment" value={comment} disabled={committed} onChange={(e) => setComment(e.target.value)} rows={3} style={{ width: '100%', padding: '10px 12px', border: '1px solid var(--border)', borderRadius: 8, background: 'var(--background)', color: 'var(--foreground)', lineHeight: 1.5 }} />
           </label>
           <p style={{ fontSize: 12, color: 'var(--muted-foreground)', marginTop: 8 }}>Drafts save automatically as you type.</p>
-          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+          </div>
+          <div data-save-bar style={{ flexShrink: 0, borderTop: '1px solid var(--border)', background: 'var(--background)', padding: '12px 16px' }}>
+          <div style={{ display: 'flex', gap: 8 }}>
             <button type="submit" disabled={busy || committed} style={{ flex: 1, minHeight: 48, padding: '0 14px', borderRadius: 8, background: 'var(--accent)', color: 'var(--accent-foreground)', border: 'none', cursor: 'pointer' }}>Save answer</button>
             <button type="button" disabled={busy || committed} onClick={() => submit(true)} style={{ minHeight: 48, padding: '0 14px', borderRadius: 8, background: 'var(--muted)', color: 'var(--foreground)', border: 'none', cursor: 'pointer' }}>Skip</button>
           </div>
           {localErr && <p role="alert" style={{ color: 'var(--destructive)', fontSize: 13 }}>{localErr}</p>}
           {notice ? <p role="status" style={{ fontSize: 13, marginTop: 10 }}>{notice}</p> : null}
+          </div>
         </form>
       )}
     </div>

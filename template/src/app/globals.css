@@ -49,3 +49,8 @@
   }
 }
 body{background:var(--background);color:var(--foreground);font-family:ui-sans-serif,system-ui,sans-serif}
+/* v3.6 F4: preview dial sliders get a >=44px hit area and a larger thumb
+   (native element kept; only its box/thumb size grows). */
+input[type='range']{min-height:44px}
+input[type='range']::-webkit-slider-thumb{width:28px;height:28px}
+input[type='range']::-moz-range-thumb{width:28px;height:28px}
