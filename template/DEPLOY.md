@@ -1,6 +1,6 @@
 # Deploying the design-sprite v3.5 template to a Fly Sprite
 
-One Next.js app (`design_sprite`, version 3.5.0-p3), deployed unchanged to
+One Next.js app (`design_sprite`, version 3.5.1-p1), deployed unchanged to
 any number of sprites. The only per-sprite state is the admin token, which
 the app generates on the sprite itself. There is no seed file and no
 per-sprite config file: the Project is created by an external driver over
@@ -92,7 +92,7 @@ app dir preserves the sprite's own `data/` untouched.
 5. Verify:
 
    - `GET https://<name>-<orgsuffix>.sprites.app/health` →
-     `{"ok":true,"app":"design_sprite","version":"3.5.0-p3","db":"ok","entries":<n>}`
+     `{"ok":true,"app":"design_sprite","version":"3.5.1-p1","db":"ok","entries":<n>}`
      (the health check does a real DB round trip).
    - The public page loads and shows the honest waiting-for-driver state.
    - An MCP client with the Bearer token can call `get_state` at

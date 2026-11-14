@@ -188,9 +188,17 @@ export default function Page() {
       </main>
 
       {/* Right pane — question answering / file viewing. Opens on demand; an
-          answer NEVER closes it (Victor rule 2) — only the X does. */}
+          answer NEVER closes it (Victor rule 2) — only the X does.
+          POSITION MUST LIVE IN THE CLASSES, NOT the inline style: an inline
+          `position: 'sticky'` silently overrode the max-lg:fixed class and
+          left the pane in the flex row on mobile, squeezing the thread to
+          a ~31px sliver (v3.5.1 hotfix, reproduced at a 390px viewport:
+          pane sticky x=31 w=359, main w=31). Below lg the pane is a fixed
+          overlay sheet; at lg it is the sticky side pane. Height is 100dvh
+          so mobile browser chrome / the on-screen keyboard shrink the pane
+          instead of pushing its footer off-screen. */}
       {pane && (
-        <aside style={{ width: 380, maxWidth: '92vw', flexShrink: 0, borderLeft: '1px solid var(--border)', padding: '20px 16px', position: 'sticky', top: 0, height: '100vh', overflowY: 'auto', background: 'var(--background)' }} className="max-lg:fixed max-lg:right-0 max-lg:top-0 max-lg:z-30 max-lg:shadow-xl">
+        <aside style={{ width: 380, maxWidth: '92vw', flexShrink: 0, borderLeft: '1px solid var(--border)', padding: '20px 16px', height: '100dvh', overflowY: 'auto', background: 'var(--background)' }} className="max-lg:fixed max-lg:right-0 max-lg:top-0 max-lg:z-30 max-lg:shadow-xl lg:sticky lg:top-0">
           <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
             <button aria-label="Close pane" onClick={() => setPane(null)} style={{ minHeight: 44, minWidth: 44, background: 'transparent', border: 'none', cursor: 'pointer' }}><X size={22} /></button>
           </div>
@@ -214,9 +222,18 @@ function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile }: { en: Entry; qB
   if (en.kind === 'question') {
     // The card face is ONLY eyebrow + prompt, and the whole card is the
     // button (Victor rule 1). No answer button, no options/prediction meta.
+    // v3.5.1 (Victor, 2026-11-13): the eyebrow also carries a STATUS word
+    // once the question is answered/skipped, so the thread shows progress
+    // at a glance — status only, never the answer content (the answer
+    // itself stays in the pane and in its own answer entry below).
+    const qs = qByKey.get(en.payload.key);
+    const status = qs?.state === 'answered' ? 'Answered' : qs?.state === 'skipped' ? 'Skipped' : qs?.state === 'struck' ? 'Struck' : null;
     return (
       <button onClick={() => onOpenQuestion(en.payload.key)} style={{ textAlign: 'left', width: '100%', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', margin: '8px 0', cursor: 'pointer', minHeight: 48 }}>
-        <span style={{ ...eyebrow, display: 'block' }}>Question</span>
+        <span style={{ ...eyebrow, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <span>Question</span>
+          {status && <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', color: 'var(--foreground)' }}><CheckCircle size={14} /> {status}</span>}
+        </span>
         <span style={{ display: 'block', fontSize: 16, lineHeight: 1.45, marginTop: 6, color: 'var(--card-foreground)', ...wrap }}>{en.payload.prompt || en.body}</span>
       </button>
     );

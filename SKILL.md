@@ -12,6 +12,8 @@ A design sprite is a small, standalone website that runs one design interview. I
 **v3.5 adds exactly two things** (everything else in v3 is unchanged):
 
 1. **Preview questions** — a third question type, `preview`, alongside `single`/`multi`: 2–4 small self-contained HTML-snippet **variants** the human picks between, plus optional question-level slider **dials**. Variants render sandboxed and script-free; dials are answer data, never scored. Snippets live and die inside the question entry — this is not the v4 design surface (no artifacts, no file versions for variants, no inspector).
+**v3.5.1 (mobile hotfix, 2026-11-13):** on phones the answer pane is a fixed overlay sheet (its positioning lives in CSS classes, never an inline style, and its height is `100dvh` so browser chrome / the on-screen keyboard shrink it instead of pushing its footer off-screen); a question card's eyebrow also carries a status word once answered (**Answered / Skipped / Struck**) — status only, never the answer content, which stays in the pane and its answer entry.
+
 2. **Dark/light follows the system, always.** The app renders in the OS/browser `prefers-color-scheme` scheme via theme tokens. There is **no toggle, no setting, no persisted choice** — never build one.
 
 The interview still runs the way an optometrist runs an eye exam: "Better, 1 or 2?" The driver arrives with a predicted decision model, posts question cards only where its guess is weak, judges every prediction the moment an answer lands, and keeps re-deriving the model from the verbatim record. The interview ends when the deterministic **sharpness gate** passes and the driver declares the model **sharp**; the human presses **Commit**. What the human walks away with is the deliverable: `model.md`, the verbatim record, and the transcript — frozen and exportable as one bundle.
@@ -145,7 +147,7 @@ Full runbook: `template/DEPLOY.md`. The shape:
 4. **Upload and extract** as the app dir: `sprite exec -s <name> --file <pkg>.tgz:/tmp/<pkg>.tgz -- sh -c "cd /home/sprite/app && tar -xzf /tmp/<pkg>.tgz"`. On a redeploy this preserves the sprite's existing `data/` — the tarball has no data dir in it.
 5. **Register the service:** `sprite-env services create app --cmd /home/sprite/app/run.sh --dir /home/sprite/app --http-port 8080`. Note: `--cmd` takes **one executable path** — `--cmd 'sh /home/sprite/app/run.sh'` is treated as a single filename and fails. `run.sh` runs the standalone server on port 8080 with `DATA_DIR=/home/sprite/app/data` on the persistent disk.
 6. **Admin token:** the app generates it on first boot at `/home/sprite/app/data/admin.token` (mode 0600) and never overwrites an existing one. Read it back via `sprite exec` and store it safely (0600). It gates `/mcp` and `/api/admin/*`. It is never in the repo, the tarball, or the logs.
-7. **Verify:** `GET https://<name>-<orgsuffix>.sprites.app/health` → `{"ok":true,"app":"design_sprite","version":"3.5.0-p3","db":"ok","entries":<n>}` — the health check performs a real DB round trip (`SELECT COUNT(*)` against SQLite). The public page shows the waiting-for-driver state until a driver creates the Project.
+7. **Verify:** `GET https://<name>-<orgsuffix>.sprites.app/health` → `{"ok":true,"app":"design_sprite","version":"3.5.1-p1","db":"ok","entries":<n>}` — the health check performs a real DB round trip (`SELECT COUNT(*)` against SQLite). The public page shows the waiting-for-driver state until a driver creates the Project.
 
 ### Runtime surface (for reference; MCP is the driver surface)
 
