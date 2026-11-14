@@ -6,12 +6,19 @@
 // comment is a driver judgement: the driver passes judgement "miss" with
 // reason "build_changing_comment" — code cannot detect it, so it is not
 // encoded here beyond carrying the reason through verbatim.
+//
+// v3.5 preview type: variants are SMALL SELF-CONTAINED HTML snippets
+// ({id, label, html}) rendered sandboxed + script-free in the UI; dials are
+// question-level slider controls ({id, label, min, max, step, default, unit?}).
+// An answer carries the chosen variant id in `choice` (exactly like single)
+// plus `dial_values` verbatim. Dial values are data, never scored.
 
 export type QuestionType = 'single' | 'multi' | 'preview';
 export type ScoreResult = 'hit' | 'miss' | 'provisional' | 'struck';
 
 export interface QOption { value: string; label: string }
-export interface Variant { id: string; label?: string; content?: string }
+export interface Variant { id: string; label: string; html: string }
+export interface Dial { id: string; label: string; min: number; max: number; step: number; default: number; unit?: string }
 export interface QuestionPayload {
   key: string;
   type: QuestionType;
@@ -21,6 +28,7 @@ export interface QuestionPayload {
   prediction?: string | string[] | null;
   recommended?: string | null;
   variants?: Variant[];
+  dials?: Dial[];
 }
 export interface AnswerPayload {
   question_key: string;
@@ -29,6 +37,7 @@ export interface AnswerPayload {
   other_text?: string;
   comment?: string;
   skipped?: boolean;
+  dial_values?: Record<string, number> | null;
 }
 export interface ScorePayload {
   question_key: string;
@@ -41,12 +50,78 @@ export interface GateError { code: string; message: string; question_key?: strin
 
 export const OTHER_OPTION: QOption = { value: 'other', label: 'Other' };
 export const MAX_NAMED_OPTIONS = 9;
+// Snippets are SMALL by spec (a variant is a swatch, not a page). The cap is
+// enforced at the gate (P3.5 audit: a 120,000-char snippet passed before it).
+export const MAX_SNIPPET_CHARS = 20000;
 
 // The Other option lives INSIDE the option group. Staging never includes it;
 // commit appends it automatically so it can never be forgotten or duplicated.
 export function withOther(options: QOption[]): QOption[] {
   if (options.some((o) => o.value === 'other')) return options;
   return [...options, { ...OTHER_OPTION }];
+}
+
+// Preview questions may omit `options`: the selectable group IS the variant
+// list, so options are derived from the variants (value = variant id,
+// label = variant label). When options ARE passed they must cover the
+// variant ids exactly (the v3 contract, kept).
+export function previewOptions(q: any): QOption[] {
+  if (Array.isArray(q?.options) && q.options.length) return q.options;
+  const variants: any[] = Array.isArray(q?.variants) ? q.variants : [];
+  return variants.filter((v) => v && typeof v.id === 'string' && v.id).map((v) => ({ value: v.id, label: typeof v.label === 'string' && v.label ? v.label : v.id }));
+}
+
+// Snippet safety gate for preview variant html. A snippet must be a small
+// self-contained fragment: inline styles and inline SVG are fine; anything
+// that can execute script or load an external resource is rejected.
+// Returns a human-actionable reason string, or null when the snippet is safe.
+export function snippetSafetyViolation(html: string): string | null {
+  const s = html;
+  if (/<script\b/i.test(s)) return 'contains a <script> tag';
+  if (/<(iframe|object|embed|link|base|form|meta)\b/i.test(s)) return 'contains a forbidden embedding/form/meta tag';
+  if (/\son\w+\s*=/i.test(s)) return 'contains an inline event-handler attribute (on*=)';
+  if (/\bsrcset\s*=/i.test(s)) return 'contains a srcset attribute (external resources are not allowed)';
+  if (/\bsrc\s*=/i.test(s)) return 'contains a src attribute (external resources are not allowed; use inline SVG or CSS instead)';
+  const hrefRe = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+  let m: RegExpExecArray | null;
+  while ((m = hrefRe.exec(s)) !== null) {
+    const v = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    if (!v.startsWith('#')) return `contains an href that is not an in-snippet fragment: "${v.slice(0, 60)}"`;
+  }
+  if (/\bposter\s*=/i.test(s)) return 'contains a poster attribute (external resources are not allowed)';
+  if (/\bbackground\s*=/i.test(s)) return 'contains a background attribute (external resources are not allowed)';
+  if (/(javascript|vbscript)\s*:/i.test(s)) return 'contains a javascript:/vbscript: URI';
+  // CSS url(): allowlist, not denylist. Only an embedded data:image or an
+  // in-snippet #fragment reference may appear; everything else (http(s),
+  // protocol-relative, backslash-obfuscated schemes like url(https:\\…),
+  // data:text/html, …) loads an external or active resource. (P3.5 audit:
+  // the old (https?:)?// pattern let both of those bypasses through.)
+  const urlRe = /url\(\s*([^)]*)\)/gi;
+  let u: RegExpExecArray | null;
+  while ((u = urlRe.exec(s)) !== null) {
+    const target = u[1].trim().replace(/^["']|["']$/g, '').trim();
+    if (target.startsWith('#') || /^data:image\//i.test(target)) continue;
+    return `contains a CSS url() that is not an embedded image or fragment: "${target.slice(0, 60)}"`;
+  }
+  if (/@import/i.test(s)) return 'contains a CSS @import (external resources are not allowed)';
+  return null;
+}
+
+export function validateDial(d: any, seen: Set<string>): GateError[] {
+  const errs: GateError[] = [];
+  const id = typeof d?.id === 'string' ? d.id : '';
+  if (!id) { errs.push({ code: 'bad_dial', message: 'every dial needs a non-empty id' }); return errs; }
+  if (seen.has(id)) errs.push({ code: 'bad_dial', message: `dial ids must be unique, duplicate: ${id}` });
+  seen.add(id);
+  if (typeof d?.label !== 'string' || !d.label) errs.push({ code: 'bad_dial', message: `dial ${id} needs a non-empty label` });
+  for (const f of ['min', 'max', 'step', 'default'] as const) {
+    if (typeof d?.[f] !== 'number' || !Number.isFinite(d[f])) errs.push({ code: 'bad_dial', message: `dial ${id} needs a finite numeric ${f}` });
+  }
+  if (errs.length) return errs;
+  if (!(d.min < d.max)) errs.push({ code: 'bad_dial_range', message: `dial ${id} needs min < max, got min=${d.min} max=${d.max}` });
+  if (!(d.step > 0)) errs.push({ code: 'bad_dial_range', message: `dial ${id} needs step > 0, got ${d.step}` });
+  if (d.default < d.min || d.default > d.max) errs.push({ code: 'bad_dial_range', message: `dial ${id} default ${d.default} is outside [${d.min}, ${d.max}]` });
+  return errs;
 }
 
 export function validateQuestion(q: any, existingKeys: Set<string>): GateError[] {
@@ -56,9 +131,13 @@ export function validateQuestion(q: any, existingKeys: Set<string>): GateError[]
   if (existingKeys.has(key)) errs.push({ code: 'duplicate_question_key', message: `question key already exists: ${key}`, question_key: key });
   if (!['single', 'multi', 'preview'].includes(q?.type)) errs.push({ code: 'bad_type', message: `type must be single|multi|preview, got: ${String(q?.type)}`, question_key: key });
   if (typeof q?.prompt !== 'string' || !q.prompt.trim()) errs.push({ code: 'missing_prompt', message: 'prompt is required', question_key: key });
-  const opts: any[] = Array.isArray(q?.options) ? q.options : [];
+  const isPreview = q?.type === 'preview';
+  // For preview, options may be omitted and are derived from the variants.
+  const opts: any[] = isPreview ? previewOptions(q) : (Array.isArray(q?.options) ? q.options : []);
   const named = opts.filter((o) => o && o.value !== 'other');
-  if (named.length < 1) errs.push({ code: 'no_options', message: 'at least one named option is required', question_key: key });
+  if (!isPreview || Array.isArray(q?.options)) {
+    if (named.length < 1) errs.push({ code: 'no_options', message: 'at least one named option is required', question_key: key });
+  }
   if (named.length > MAX_NAMED_OPTIONS) errs.push({ code: 'too_many_options', message: `${named.length} named options exceeds the max of ${MAX_NAMED_OPTIONS} (Other is added automatically as the 10th)`, question_key: key });
   const values = named.map((o) => o?.value);
   if (new Set(values).size !== values.length) errs.push({ code: 'duplicate_option', message: 'option values must be unique', question_key: key });
@@ -67,34 +146,54 @@ export function validateQuestion(q: any, existingKeys: Set<string>): GateError[]
       errs.push({ code: 'bad_option', message: 'every option needs a non-empty value and label', question_key: key }); break;
     }
   }
-  // Prediction must reference named options.
+  // Prediction must reference named options (for preview: the variant ids).
   const pred = q?.prediction;
   if (pred !== undefined && pred !== null) {
     if (q.type === 'multi') {
       if (!Array.isArray(pred) || pred.length === 0 || pred.some((p: any) => !values.includes(p)))
         errs.push({ code: 'bad_prediction', message: 'multi prediction must be a non-empty subset of option values', question_key: key });
     } else if (typeof pred !== 'string' || !values.includes(pred)) {
-      errs.push({ code: 'bad_prediction', message: 'prediction must be one of the option values', question_key: key });
+      errs.push({ code: 'bad_prediction', message: isPreview ? 'prediction must be one of the variant ids' : 'prediction must be one of the option values', question_key: key });
     }
   }
-  // Preview: 2-4 variants, and option values must cover variant ids exactly.
-  if (q?.type === 'preview') {
+  // Dials are a preview-only concept.
+  const dials: any[] = Array.isArray(q?.dials) ? q.dials : [];
+  if (q?.dials !== undefined && !Array.isArray(q.dials)) errs.push({ code: 'bad_dial', message: 'dials must be an array', question_key: key });
+  if (dials.length && !isPreview) errs.push({ code: 'bad_dial', message: 'dials are only valid on preview questions', question_key: key });
+  if (isPreview) {
+    // Preview: 2-4 variants {id, label, html}, unique stable ids, safe snippets.
     const variants: any[] = Array.isArray(q?.variants) ? q.variants : [];
     if (variants.length < 2 || variants.length > 4)
       errs.push({ code: 'bad_variant_count', message: `preview questions need 2-4 variants, got ${variants.length}`, question_key: key });
     const vids = variants.map((v) => v?.id);
     if (vids.some((v) => typeof v !== 'string' || !v) || new Set(vids).size !== vids.length)
       errs.push({ code: 'bad_variant', message: 'every variant needs a unique non-empty id', question_key: key });
-    const optSet = new Set(values); const varSet = new Set(vids);
-    const missing = vids.filter((v) => !optSet.has(v)); const extra = values.filter((v: string) => !varSet.has(v));
-    if (missing.length || extra.length)
-      errs.push({ code: 'variant_coverage', message: `preview option values must cover variant ids exactly; missing options for: [${missing.join(', ')}], options without variants: [${extra.join(', ')}]`, question_key: key });
+    for (const v of variants) {
+      if (typeof v?.label !== 'string' || !v.label) errs.push({ code: 'bad_variant', message: `variant ${v?.id || '?'} needs a non-empty label`, question_key: key });
+      if (typeof v?.html !== 'string' || !v.html.trim()) errs.push({ code: 'bad_variant', message: `variant ${v?.id || '?'} needs a non-empty html snippet`, question_key: key });
+      else if (v.html.length > MAX_SNIPPET_CHARS) errs.push({ code: 'snippet_too_large', message: `variant ${v.id} html is ${v.html.length} chars; snippets must be small (max ${MAX_SNIPPET_CHARS} chars)`, question_key: key });
+      else {
+        const violation = snippetSafetyViolation(v.html);
+        if (violation) errs.push({ code: 'unsafe_snippet', message: `variant ${v.id} html is not a safe self-contained snippet: ${violation}`, question_key: key });
+      }
+    }
+    // When options were passed explicitly, they must cover variant ids exactly.
+    if (Array.isArray(q?.options)) {
+      const optSet = new Set(values); const varSet = new Set(vids);
+      const missing = vids.filter((v) => !optSet.has(v)); const extra = values.filter((v: string) => !varSet.has(v));
+      if (missing.length || extra.length)
+        errs.push({ code: 'variant_coverage', message: `preview option values must cover variant ids exactly; missing options for: [${missing.join(', ')}], options without variants: [${extra.join(', ')}]`, question_key: key });
+    }
+    const seenDials = new Set<string>();
+    for (const d of dials) for (const e of validateDial(d, seenDials)) errs.push({ ...e, question_key: key });
   }
   return errs;
 }
 
 // Deterministic provisional score for a fresh answer. Always provisional:
 // the driver must judge it before any turn can commit (end_turn gate).
+// Preview scores exactly like single: the chosen variant id vs the predicted
+// variant id. Dial values are data and never scored.
 export function provisionalScore(q: QuestionPayload, a: AnswerPayload): ScorePayload {
   const base = { question_key: q.key, provisional: true, source: 'deterministic' as const };
   if (a.skipped) return { ...base, result: 'provisional', reason: 'skip_prediction_stands' };

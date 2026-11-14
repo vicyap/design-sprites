@@ -12,7 +12,8 @@ export async function POST(req: Request) {
   let body: any; try { body = await req.json(); } catch { return NextResponse.json({ error: 'validation' }, { status: 400 }); }
   if (body?.kind === 'answer') {
     if (typeof body?.question_key !== 'string' || !body.question_key) { emit('entries.answer', 'failed', 'validation'); return NextResponse.json({ error: 'question_key required' }, { status: 400 }); }
-    const r = addHumanAnswer({ question_key: body.question_key, choice: body.choice ?? null, choices: body.choices ?? null, other_text: body.other_text || '', comment: body.comment || '', skipped: !!body.skipped });
+    const dialValues = body.dial_values && typeof body.dial_values === 'object' && !Array.isArray(body.dial_values) ? body.dial_values : null;
+    const r = addHumanAnswer({ question_key: body.question_key, choice: body.choice ?? null, choices: body.choices ?? null, other_text: body.other_text || '', comment: body.comment || '', skipped: !!body.skipped, dial_values: dialValues });
     if (!r.ok) {
       emit('entries.answer', 'failed', 'validation');
       const frozen = r.errors.some((e) => e.code === 'commit_freeze');

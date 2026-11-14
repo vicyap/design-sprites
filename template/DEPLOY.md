@@ -1,17 +1,23 @@
-# Deploying the design-sprite v3 template to a Fly Sprite
+# Deploying the design-sprite v3.5 template to a Fly Sprite
 
-One Next.js app (`design_sprite`, version 3.0.0-p3), deployed unchanged to
+One Next.js app (`design_sprite`, version 3.5.0-p3), deployed unchanged to
 any number of sprites. The only per-sprite state is the admin token, which
 the app generates on the sprite itself. There is no seed file and no
 per-sprite config file: the Project is created by an external driver over
 MCP (`create_project`) once the sprite is up.
+
+v3.5 notes: dark/light always follows the OS/browser
+`prefers-color-scheme` (theme tokens only — there is no toggle, setting,
+or env var for it), and the app serves the `preview` question type
+(sandboxed HTML-snippet variants + dials) alongside `single`/`multi`.
+Neither changes deployment: no new env, no new labels, no new services.
 
 ## There is no built-in AI — and no gateway label
 
 The sprite makes **no AI calls**. The interviewer is an external agent
 (Muse / Claude Code) driving over MCP. Therefore:
 
-- Create the sprite with **no `--label` flags at all**. v3 needs **NO
+- Create the sprite with **no `--label` flags at all**. v3.5 needs **NO
   `conn:*` labels** — do NOT add `conn:anthropic` (that was v2).
 - No API keys or gateway URLs exist anywhere in this app.
 
@@ -24,7 +30,7 @@ toolchain:
 ```
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # 28 tests: node --test + tsx --test
+npm test            # 35 tests: node --test + tsx --test
 npm run build       # Next.js standalone output (.next/standalone)
 ```
 
@@ -86,7 +92,7 @@ app dir preserves the sprite's own `data/` untouched.
 5. Verify:
 
    - `GET https://<name>-<orgsuffix>.sprites.app/health` →
-     `{"ok":true,"app":"design_sprite","version":"3.0.0-p3","db":"ok","entries":<n>}`
+     `{"ok":true,"app":"design_sprite","version":"3.5.0-p3","db":"ok","entries":<n>}`
      (the health check does a real DB round trip).
    - The public page loads and shows the honest waiting-for-driver state.
    - An MCP client with the Bearer token can call `get_state` at
@@ -119,7 +125,11 @@ in non-interactive shells).
   `discard_turn`), reads (`get_state`, `get_record`, `list_files`,
   `get_file`, `export_bundle`), `wait_for_input`, plus `post_artifact` /
   `patch_artifact`, which exist only for carrying v2 files forward as
-  preserved files during migration — not a v3 authoring surface.
+  preserved files during migration — not a v3.5 authoring surface.
+  `post_question` accepts type `preview` with `variants` + optional
+  `dials`; the `end_turn` gate enforces snippet safety (script-free, no
+  external resources, CSS `url()` allowlist) and the 20,000-char snippet
+  cap (`MAX_SNIPPET_CHARS`).
 - After Commit the Project is read-only for design content on every
   surface (web writes get HTTP 409 `commit_freeze`; MCP staging is
   rejected with the same structured error). Reads and export keep working.

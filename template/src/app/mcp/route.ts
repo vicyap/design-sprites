@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { checkToken, entriesSince, getHead } from '@/lib/db';
 import * as store from '@/lib/store';
 import { emit } from '@/lib/observe';
+import { APP_VERSION } from '@/lib/version';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,7 +21,7 @@ function stage(tool: string, args: any) {
 }
 
 function buildServer() {
-  const server = new McpServer({ name: 'design-sprite-v3', version: '3.0.0-p3' });
+  const server = new McpServer({ name: 'design-sprite-v3', version: APP_VERSION });
 
   server.tool('create_project', 'Stage project creation: set the want (and optional title) on this sprite\u2019s single project. Commits at end_turn.', {
     want: z.string().min(1), title: z.string().optional(),
@@ -30,15 +31,16 @@ function buildServer() {
     body: z.string().min(1),
   }, async (a) => stage('post_message', a));
 
-  server.tool('post_question', 'Stage a question card. Other is added automatically INSIDE the option group at commit; pass at most 9 named options. Types: single, multi, preview (single-select-with-preview: 2-4 variants, option values must cover variant ids exactly). prediction is your predicted answer (option value, or array for multi).', {
+  server.tool('post_question', 'Stage a question card. Other is added automatically INSIDE the option group at commit; pass at most 9 named options. Types: single, multi, preview. Preview (v3.5): 2-4 variants, each {id, label, html} where html is a SMALL SELF-CONTAINED snippet (max 20000 chars; inline styles/SVG and embedded data:image or #fragment CSS url() only — no scripts, no external src/href/poster/background, no other CSS url(); the end_turn gate rejects unsafe or oversized snippets). Options may be omitted for preview (derived from variant ids) or passed explicitly (then values must cover variant ids exactly). Optional question-level dials: [{id, label, min, max, step, default, unit?}] — slider values the human sets; dial values are answer data, never scored. prediction is your predicted answer (option value / variant id, or array for multi).', {
     key: z.string().min(1),
     type: z.enum(['single', 'multi', 'preview']),
     prompt: z.string().min(1),
     load_bearing: z.boolean().optional(),
-    options: z.array(z.object({ value: z.string().min(1), label: z.string().min(1) })).min(1),
+    options: z.array(z.object({ value: z.string().min(1), label: z.string().min(1) })).optional(),
     prediction: z.union([z.string(), z.array(z.string())]).nullable().optional(),
     recommended: z.string().nullable().optional(),
-    variants: z.array(z.object({ id: z.string().min(1), label: z.string().optional(), content: z.string().optional() })).optional(),
+    variants: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), html: z.string().min(1) })).optional(),
+    dials: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), min: z.number(), max: z.number(), step: z.number(), default: z.number(), unit: z.string().optional() })).optional(),
   }, async (a) => stage('post_question', a));
 
   server.tool('post_artifact', 'Stage a new versioned artifact file (full content). Stable element ids (id="...") in HTML must be unique, and a rewrite of an existing path must keep all previous element ids.', {

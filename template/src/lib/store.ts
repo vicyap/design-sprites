@@ -6,7 +6,7 @@
 // base_head no longer equals the record head is rejected as stale.
 import crypto from 'node:crypto';
 import { sqlite, ensureProject, getProject, getHead, insertEntry, listEntries, safeParse } from './db';
-import { validateQuestion, withOther, provisionalScore, judgementScore, deriveQuestions, sharpnessGate, validateArtifactIds, extractElementIds, type GateError, type QuestionPayload } from './protocol';
+import { validateQuestion, withOther, previewOptions, provisionalScore, judgementScore, deriveQuestions, sharpnessGate, validateArtifactIds, extractElementIds, type GateError, type QuestionPayload } from './protocol';
 import { buildZip, type ZipEntry } from './zip';
 import { emit } from './observe';
 
@@ -109,17 +109,17 @@ function writeFileVersion(projectId: string, path: string, content: string): num
 // reloads with no driver present. One draft per question; saving overwrites
 // the draft only (the record itself stays append-only). Draft edits are
 // design content: frozen after Commit.
-export interface DraftPayload { choice?: string | null; choices?: string[] | null; other_text?: string; comment?: string }
+export interface DraftPayload { choice?: string | null; choices?: string[] | null; other_text?: string; comment?: string; dial_values?: Record<string, number> | null }
 export function saveDraft(questionKey: string, draft: DraftPayload) {
   if (isCommitted()) return { ok: false as const, errors: [COMMIT_FREEZE_ERROR] };
   const pid = ensureProject();
-  const payload = { choice: draft.choice ?? null, choices: draft.choices ?? null, other_text: draft.other_text || '', comment: draft.comment || '' };
+  const payload = { choice: draft.choice ?? null, choices: draft.choices ?? null, other_text: draft.other_text || '', comment: draft.comment || '', dial_values: draft.dial_values ?? null };
   const now = new Date().toISOString();
   sqlite.prepare("INSERT INTO drafts(project_id,question_key,payload,updated_at) VALUES(?,?,?,?) ON CONFLICT(project_id,question_key) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at").run(pid, questionKey, JSON.stringify(payload), now);
   emit('drafts.save', 'succeeded', 'ok', {});
   return { ok: true as const, draft: { question_key: questionKey, ...payload, updated_at: now } };
 }
-export function listDrafts(): { question_key: string; choice: string | null; choices: string[] | null; other_text: string; comment: string; updated_at: string }[] {
+export function listDrafts(): { question_key: string; choice: string | null; choices: string[] | null; other_text: string; comment: string; dial_values: Record<string, number> | null; updated_at: string }[] {
   const pid = ensureProject();
   const rows = sqlite.prepare("SELECT question_key,payload,updated_at FROM drafts WHERE project_id=? ORDER BY question_key ASC").all(pid) as any[];
   return rows.map((r) => ({ question_key: r.question_key, ...safeParse(r.payload), updated_at: r.updated_at }));
@@ -159,13 +159,21 @@ export function commitProject() {
 
 // Human path: an answer is stored IMMEDIATELY (never waits for a driver),
 // together with its deterministic provisional score, in one transaction.
-export function addHumanAnswer(args: { question_key: string; choice?: string | null; choices?: string[] | null; other_text?: string; comment?: string; skipped?: boolean }) {
+export function addHumanAnswer(args: { question_key: string; choice?: string | null; choices?: string[] | null; other_text?: string; comment?: string; skipped?: boolean; dial_values?: Record<string, number> | null }) {
   if (isCommitted()) return { ok: false as const, errors: [COMMIT_FREEZE_ERROR] };
   const pid = ensureProject();
   const questions = deriveQuestions(listEntries() as any);
   const qs = questions.find((q) => q.key === args.question_key);
   if (!qs) return { ok: false as const, errors: [{ code: 'unknown_question', message: `no question with key ${args.question_key}` }] };
-  const answerPayload = { question_key: args.question_key, choice: args.choice ?? null, choices: args.choices ?? null, other_text: args.other_text || '', comment: args.comment || '', skipped: !!args.skipped, superseding: false };
+  // Dial values are stored verbatim (data, never scored). Only finite numbers
+  // under declared dial ids are kept; anything else is dropped, not guessed.
+  let dialValues: Record<string, number> | null = null;
+  if (args.dial_values && typeof args.dial_values === 'object') {
+    const declared = new Set((qs.question.dials || []).map((d) => d.id));
+    dialValues = {};
+    for (const [k, v] of Object.entries(args.dial_values)) if (declared.has(k) && typeof v === 'number' && Number.isFinite(v)) dialValues[k] = v;
+  }
+  const answerPayload = { question_key: args.question_key, choice: args.choice ?? null, choices: args.choices ?? null, other_text: args.other_text || '', comment: args.comment || '', skipped: !!args.skipped, dial_values: dialValues, superseding: false };
   let answer: any; let score: any;
   const tx = sqlite.transaction(() => {
     answer = insertEntry(pid, 'answer', 'human', '', answerPayload);
@@ -273,7 +281,8 @@ export function endTurn(): { ok: boolean; errors?: GateError[]; head?: number; t
           const e = insertEntry(pid, 'message', 'driver', a.args.body, {});
           committed.push({ tool: a.tool, entry_id: e.id });
         } else if (a.tool === 'post_question') {
-          const payload: QuestionPayload = { ...a.args, options: withOther(a.args.options) };
+          // Preview questions may omit options — derive them from the variants.
+          const payload: QuestionPayload = { ...a.args, options: withOther(previewOptions(a.args)) };
           const e = insertEntry(pid, 'question', 'driver', a.args.prompt, payload);
           committed.push({ tool: a.tool, entry_id: e.id });
         } else if (a.tool === 'score_answer') {

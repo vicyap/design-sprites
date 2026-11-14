@@ -17,7 +17,8 @@ export async function POST(req: Request) {
   let body: any;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'validation' }, { status: 400 }); }
   if (typeof body?.question_key !== 'string' || !body.question_key) { emit('drafts.save', 'failed', 'validation'); return NextResponse.json({ error: 'question_key required' }, { status: 400 }); }
-  const r = saveDraft(body.question_key, { choice: body.choice ?? null, choices: body.choices ?? null, other_text: body.other_text || '', comment: body.comment || '' });
+  const dialValues = body.dial_values && typeof body.dial_values === 'object' && !Array.isArray(body.dial_values) ? body.dial_values : null;
+  const r = saveDraft(body.question_key, { choice: body.choice ?? null, choices: body.choices ?? null, other_text: body.other_text || '', comment: body.comment || '', dial_values: dialValues });
   if (!r.ok) { emit('drafts.save', 'failed', 'validation'); return NextResponse.json({ errors: r.errors, error: r.errors[0]?.code }, { status: 409 }); }
   return NextResponse.json({ draft: r.draft }, { status: 200 });
 }

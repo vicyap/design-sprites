@@ -43,10 +43,42 @@ test('gate: more than 9 named options rejects and leaves the turn open', () => {
 });
 
 test('gate: preview variant coverage rejects when incomplete', () => {
-  store.stageAction('post_question', { key: 'prev1', type: 'preview', prompt: 'Which variant?', options: [{ value: 'v1', label: 'V1' }, { value: 'v2', label: 'V2' }], prediction: 'v1', variants: [{ id: 'v1' }, { id: 'v2' }, { id: 'v3' }] });
+  const pvx = (id: string) => ({ id, label: 'Variant ' + id, html: `<div>${id}</div>` });
+  store.stageAction('post_question', { key: 'prev1', type: 'preview', prompt: 'Which variant?', options: [{ value: 'v1', label: 'V1' }, { value: 'v2', label: 'V2' }], prediction: 'v1', variants: [pvx('v1'), pvx('v2'), pvx('v3')] });
   const r = store.endTurn();
   assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'variant_coverage'), JSON.stringify(r.errors));
   assert.ok(store.getOpenTurn()); store.discardTurn();
+});
+
+test('gate: preview unsafe snippet and bad dial reject at end_turn, turn stays open', () => {
+  const pvx = (id: string, html?: string) => ({ id, label: 'Variant ' + id, html: html ?? `<div>${id}</div>` });
+  store.stageAction('post_question', { key: 'prev_script', type: 'preview', prompt: 'Which?', prediction: 'v1', variants: [pvx('v1', '<div>x</div><script>alert(1)</script>'), pvx('v2')] });
+  let r = store.endTurn();
+  assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'unsafe_snippet'), JSON.stringify(r.errors));
+  assert.ok(store.getOpenTurn(), 'turn stays open after unsafe rejection');
+  assert.ok(!store.listEntries().some((e: any) => e.kind === 'question' && e.payload.key === 'prev_script'), 'rejected question never enters the record');
+  store.discardTurn();
+  store.stageAction('post_question', { key: 'prev_dial', type: 'preview', prompt: 'Which?', prediction: 'v1', variants: [pvx('v1'), pvx('v2')], dials: [{ id: 'gap', label: 'Gap', min: 40, max: 40, step: 1, default: 40 }] });
+  r = store.endTurn();
+  assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'bad_dial_range'), JSON.stringify(r.errors));
+  assert.ok(store.getOpenTurn()); store.discardTurn();
+});
+
+test('preview happy path: variants + dials commit, answer stores dial values verbatim, variant scored', () => {
+  const pvx = (id: string) => ({ id, label: 'Variant ' + id, html: `<div style="padding:8px">${id}</div>` });
+  store.stageAction('post_question', { key: 'prev_ok', type: 'preview', prompt: 'Which layout?', load_bearing: false, prediction: 'v2', variants: [pvx('v1'), pvx('v2'), pvx('v3')], dials: [{ id: 'gap', label: 'Gap', min: 0, max: 40, step: 2, default: 12, unit: 'px' }] });
+  const r = store.endTurn();
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const q = store.listEntries().find((e: any) => e.kind === 'question' && e.payload.key === 'prev_ok');
+  assert.ok(q); assert.equal(q.payload.options.length, 4); assert.equal(q.payload.options[3].value, 'other'); // derived options + Other
+  assert.equal(q.payload.variants.length, 3); assert.equal(q.payload.dials[0].id, 'gap');
+  const a = store.addHumanAnswer({ question_key: 'prev_ok', choice: 'v2', dial_values: { gap: 26 }, comment: 'wider gap reads better' });
+  assert.equal(a.ok, true, JSON.stringify(a));
+  assert.equal(a.answer.payload.choice, 'v2'); assert.deepEqual(a.answer.payload.dial_values, { gap: 26 });
+  assert.equal(a.score.payload.result, 'hit'); assert.equal(a.score.payload.provisional, true);
+  // Judge the provisional so later end_turns are not blocked by gate 4.
+  store.stageAction('score_answer', { question_key: 'prev_ok', judgement: 'hit' });
+  assert.equal(store.endTurn().ok, true);
 });
 
 test('gate: stale head rejects end_turn and the turn stays open', () => {
