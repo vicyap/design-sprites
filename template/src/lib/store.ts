@@ -319,6 +319,29 @@ export function endTurn(): { ok: boolean; errors?: GateError[]; head?: number; t
   return { ok: true, turn_id: turn.id, head: newHead, committed };
 }
 
+// --- Driver presence (v3.7 F1) -------------------------------------------
+// Presence is RUNTIME state, never record content: it lives in its own
+// single-row table and is never written as an entry. The MCP surface stamps
+// it on every authenticated driver request (and periodically while a driver
+// sits in wait_for_input); a registered ds-wake bridge stamps it via its
+// poll header. Staleness threshold (Decided-for-you, P1): 10 minutes —
+// driver turns are bursty (a driver mid-turn may make no MCP call for
+// minutes), so seconds would flap the banner to "waiting" while a driver
+// is genuinely attached; 10 min is long enough to ride out a working turn
+// and short enough that a closed session stops claiming presence quickly.
+export const PRESENCE_STALE_MS = 10 * 60 * 1000;
+export function touchPresence(label: string, source: string) {
+  ensureProject();
+  sqlite.prepare("INSERT INTO presence(id,label,source,last_seen) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET label=excluded.label, source=excluded.source, last_seen=excluded.last_seen").run(label, source, new Date().toISOString());
+}
+export function getPresence(): { driver_present: boolean; label: string | null; source: string | null; last_seen: string | null } {
+  ensureProject();
+  const r = sqlite.prepare("SELECT label,source,last_seen as lastSeen FROM presence WHERE id=1").get() as any;
+  if (!r) return { driver_present: false, label: null, source: null, last_seen: null };
+  const fresh = Date.now() - new Date(r.lastSeen).getTime() < PRESENCE_STALE_MS;
+  return { driver_present: fresh, label: r.label, source: r.source, last_seen: r.lastSeen };
+}
+
 export function getState() {
   const entries = listEntries() as any[];
   const questions = deriveQuestions(entries);
@@ -334,6 +357,7 @@ export function getState() {
     questions: questions.map((q) => ({ key: q.key, type: q.question.type, load_bearing: !!q.question.load_bearing, state: q.state, score: q.score ? { result: q.score.result, provisional: q.score.provisional, reason: q.score.reason } : null })),
     open_turn: turn ? { id: turn.id, base_head: turn.baseHead, staged: turn.actions.map((a) => a.tool) } : null,
     files: listFiles(),
+    presence: getPresence(),
   };
 }
 
@@ -358,6 +382,7 @@ export function getUiState() {
     sharp_declared: entries.some((e) => e.kind === 'sharp'),
     files: listFiles(),
     drafts: listDrafts(),
+    presence: getPresence(),
   };
 }
 

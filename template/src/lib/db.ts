@@ -17,7 +17,8 @@ CREATE TABLE IF NOT EXISTS entries(id INTEGER PRIMARY KEY AUTOINCREMENT,project_
 CREATE TABLE IF NOT EXISTS staged_turns(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,base_head INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'open',created_at TEXT NOT NULL,committed_at TEXT);
 CREATE TABLE IF NOT EXISTS staged_actions(id INTEGER PRIMARY KEY AUTOINCREMENT,turn_id TEXT NOT NULL,seq INTEGER NOT NULL,tool TEXT NOT NULL,args TEXT NOT NULL,created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS file_versions(id INTEGER PRIMARY KEY AUTOINCREMENT,project_id TEXT NOT NULL,path TEXT NOT NULL,version INTEGER NOT NULL,content TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(project_id,path,version));
-CREATE TABLE IF NOT EXISTS drafts(project_id TEXT NOT NULL,question_key TEXT NOT NULL,payload TEXT NOT NULL DEFAULT '{}',updated_at TEXT NOT NULL,PRIMARY KEY(project_id,question_key));`);
+CREATE TABLE IF NOT EXISTS drafts(project_id TEXT NOT NULL,question_key TEXT NOT NULL,payload TEXT NOT NULL DEFAULT '{}',updated_at TEXT NOT NULL,PRIMARY KEY(project_id,question_key));
+CREATE TABLE IF NOT EXISTS presence(id INTEGER PRIMARY KEY CHECK(id=1),label TEXT,source TEXT,last_seen TEXT NOT NULL);`);
 // Additive migrations for P1-era databases (append-only tables are never rewritten).
 function addColumn(table: string, col: string, ddl: string) {
   const cols = sqlite.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];

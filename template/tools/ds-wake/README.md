@@ -1,6 +1,6 @@
 # ds-wake — optional driver wake-up via Claude Code Channels (F5)
 
-Optional enhancement. The design sprite itself is unchanged: no sprite code,
+Optional enhancement. Since v3.7 the bridge also stamps driver presence: its polls carry an `x-ds-wake: 1` header and the sprite records a runtime heartbeat (never a record entry), so the UI banner can honestly show a driver as attached while the bridge runs. Otherwise the design sprite itself is unchanged: no sprite code,
 no `conn:*` labels, no built-in AI. `wait_for_input` remains fully functional
 and is the fallback whenever this bridge is not running.
 

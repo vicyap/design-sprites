@@ -1,9 +1,15 @@
 import { NextResponse } from 'next/server';
 import { listEntries } from '@/lib/db';
-import { addHumanAnswer, addHumanMessage } from '@/lib/store';
+import { addHumanAnswer, addHumanMessage, touchPresence } from '@/lib/store';
 import { emit } from '@/lib/observe';
 export const dynamic = 'force-dynamic';
-export async function GET() { const e = listEntries(); emit('entries.list', 'succeeded', 'ok', { count: e.length }); return NextResponse.json({ entries: e }); }
+export async function GET(req: Request) {
+  // v3.7 F1: a registered ds-wake bridge identifies itself with this header
+  // on its polls — the bridge only runs attached to a live driver session,
+  // so its poll is honest presence. Plain reads (no header) never stamp.
+  if (req.headers.get('x-ds-wake') === '1') touchPresence('driver', 'ds-wake');
+  const e = listEntries(); emit('entries.list', 'succeeded', 'ok', { count: e.length }); return NextResponse.json({ entries: e });
+}
 export async function POST(req: Request) {
   // Human UI path: same-origin browser posts need no token (the human UI must
   // work with no driver/credentials present). Human entries are stored

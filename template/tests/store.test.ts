@@ -143,6 +143,26 @@ test('write_model versions model.md as a file', () => {
   assert.equal(f.version, 1); assert.ok(f.content.includes('v1 content'));
 });
 
+test('presence (v3.7 F1): absent before any touch, fresh after touch, stale past the threshold, never an entry', () => {
+  const before = store.getPresence();
+  assert.equal(before.driver_present, false);
+  const headBefore = store.getHead();
+  store.touchPresence('driver', 'mcp');
+  const fresh = store.getPresence();
+  assert.equal(fresh.driver_present, true);
+  assert.equal(fresh.source, 'mcp');
+  assert.ok(fresh.last_seen);
+  assert.equal(store.getHead(), headBefore, 'presence writes must not enter the verbatim record');
+  // Backdate beyond the staleness threshold: presence falls away.
+  dbmod.sqlite.prepare("UPDATE presence SET last_seen=? WHERE id=1").run(new Date(Date.now() - store.PRESENCE_STALE_MS - 1000).toISOString());
+  assert.equal(store.getPresence().driver_present, false);
+  // UI + driver state both carry presence.
+  assert.equal(store.getUiState().presence.driver_present, false);
+  store.touchPresence('driver', 'ds-wake');
+  assert.equal(store.getState().presence.driver_present, true);
+  assert.equal(store.getState().presence.source, 'ds-wake');
+});
+
 test('commit freeze: driver writes reject once the project is committed', () => {
   dbmod.sqlite.prepare("UPDATE projects SET status='committed', committed_at=? WHERE id='proj_default'").run(new Date().toISOString());
   const r = store.stageAction('post_message', { body: 'should reject' });

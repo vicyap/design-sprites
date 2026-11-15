@@ -92,7 +92,11 @@ function buildServer() {
     timeout_ms: z.number().int().min(0).max(50000).optional(),
   }, async (a) => {
     const deadline = Date.now() + (a.timeout_ms ?? 20000);
+    let lastStamp = 0;
     for (;;) {
+      // A driver blocked in wait_for_input IS present — keep its heartbeat
+      // fresh while it waits (v3.7 F1), at most once per 10s.
+      if (Date.now() - lastStamp > 10000) { store.touchPresence('driver', 'mcp'); lastStamp = Date.now(); }
       const fresh = entriesSince(a.since).filter((e: any) => e.role === 'human');
       if (fresh.length) { emit('mcp.wait_for_input', 'succeeded', 'ok', { count: fresh.length }); return ok({ timed_out: false, head: getHead(), entries: fresh }); }
       if (Date.now() >= deadline) { emit('mcp.wait_for_input', 'succeeded', 'ok', { count: 0 }); return ok({ timed_out: true, head: getHead(), entries: [] }); }
@@ -105,6 +109,9 @@ function buildServer() {
 
 async function handle(req: Request) {
   if (!checkToken(req)) { emit('mcp.request', 'failed', 'auth_failed'); return Response.json({ error: 'unauthorized' }, { status: 401 }); }
+  // v3.7 F1: any authenticated driver request is presence — stamp it.
+  // Runtime state only; never an entry in the verbatim record.
+  store.touchPresence('driver', 'mcp');
   const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const server = buildServer();
   await server.connect(transport);

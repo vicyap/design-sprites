@@ -22,7 +22,10 @@ let seen = -1; // max entry id already known; -1 = not yet initialised
 
 async function tick() {
   try {
-    const r = await fetch(`${BASE}/api/entries`);
+    // v3.7 F1: identify as the wake bridge so the sprite stamps driver
+    // presence from these polls (the bridge runs only while a driver
+    // session is open, so the heartbeat is honest).
+    const r = await fetch(`${BASE}/api/entries`, { headers: { 'x-ds-wake': '1' } });
     if (!r.ok) { log('poll http', r.status); return; }
     const { entries } = await r.json();
     if (seen < 0) {

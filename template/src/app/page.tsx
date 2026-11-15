@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, FormEvent, type CSSProperties } from 'react';
-import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, LockKey, CheckCircle, SealCheck, ArrowRight } from '@phosphor-icons/react';
+import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, LockKey, CheckCircle, SealCheck, ArrowRight, Broadcast } from '@phosphor-icons/react';
 
 // Design Sprites v3 — full UI (P3, descoped per Amendment 2: chat + decisions
 // only; NO artifact pane or inspector). v3.5 P2 adds the preview question
@@ -16,7 +16,7 @@ import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, Loc
 
 type Entry = { id: number; kind: string; role: string; body: string; payload: any; createdAt: string };
 type QState = { key: string; question: any; answer?: any; answerId?: number; score?: any; state: string };
-type UiState = { project: any; head: number; entries: Entry[]; questions: QState[]; sharpness: any; sharp_declared: boolean; files: any[]; drafts: any[] };
+type UiState = { project: any; head: number; entries: Entry[]; questions: QState[]; sharpness: any; sharp_declared: boolean; files: any[]; drafts: any[]; presence?: { driver_present: boolean; label: string | null; source: string | null; last_seen: string | null } };
 type Pane = { type: 'question'; key: string } | { type: 'file'; path: string } | null;
 
 const eyebrow: CSSProperties = { letterSpacing: '0.08em', textTransform: 'uppercase', fontSize: 12, color: 'var(--muted-foreground)' };
@@ -156,20 +156,10 @@ export default function Page() {
           <br />Sharpness: {ui.sharp_declared ? 'declared sharp' : ui.sharpness?.sharp ? 'gate passes' : 'not yet sharp'} ({ui.sharpness?.answered_load_bearing || 0} load-bearing answered)
         </p>
       </div>
-      <div>
-        <p style={eyebrow}>Questions</p>
-        <ul data-nav-questions style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
-          {questions.map((q) => (
-            <li key={q.key}>
-              <button data-nav-question={q.key} data-question-status={q.state} onClick={() => { openQuestion(q.key); setNavOpen(false); }} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', width: '100%', textAlign: 'left', minHeight: 44, padding: '8px', borderRadius: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 14 }}>
-                <span style={{ flex: 1, minWidth: 0, lineHeight: 1.4, ...wrap }}>{q.question?.prompt || q.key}</span>
-                <span style={{ flexShrink: 0, fontSize: 12, color: 'var(--muted-foreground)', paddingTop: 2 }}>{statusWord(q.state)}</span>
-              </button>
-            </li>
-          ))}
-          {questions.length === 0 && <li style={{ fontSize: 14, color: 'var(--muted-foreground)' }}>No questions yet.</li>}
-        </ul>
-      </div>
+      {/* v3.7 F3: the sidebar is files + export + Commit ONLY — the v3.6
+          Questions navigator section is gone (Victor: the sidebar doesn't
+          need every question listed). Moving between questions lives in
+          the thread cards and the pane's Next-open-question flow. */}
       <div>
         <p style={eyebrow}>Files</p>
         <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
@@ -223,11 +213,18 @@ export default function Page() {
             <h1 style={{ fontSize: 28, lineHeight: 1.2, margin: '8px 0', ...wrap }}>{ui?.project?.title || 'Project stream'}</h1>
             {ui && <p data-progress style={{ fontSize: 14, color: 'var(--muted-foreground)', margin: '0 0 10px' }}>{answeredCount} of {questions.length} answered</p>}
             {committed ? (
-              <div role="status" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--warning-soft)', padding: '10px 12px', borderRadius: 8 }}>
+              <div role="status" data-presence="committed" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--warning-soft)', padding: '10px 12px', borderRadius: 8 }}>
                 <LockKey size={20} /><span>Committed — this record is frozen read-only.</span>
               </div>
+            ) : ui?.presence?.driver_present ? (
+              // v3.7 F1: presence is honest to the turn-based driver model —
+              // a driver is ATTACHED and will be woken by activity; this
+              // never claims an AI is watching live.
+              <div role="status" data-presence="driver" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--success-soft)', padding: '10px 12px', borderRadius: 8 }}>
+                <Broadcast size={20} /><span>A driver is attached — it will be woken by your activity. Your messages are stored immediately in the verbatim record.</span>
+              </div>
             ) : (
-              <div role="status" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--muted)', padding: '10px 12px', borderRadius: 8 }}>
+              <div role="status" data-presence="waiting" style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'var(--muted)', padding: '10px 12px', borderRadius: 8 }}>
                 <HourglassMedium size={20} /><span>Waiting for a driver — no AI is present. Your messages are stored immediately in the verbatim record.</span>
               </div>
             )}
@@ -237,7 +234,7 @@ export default function Page() {
             {!ui && <p>Loading the record…</p>}
             {ui && ui.entries.length === 0 && <p>No entries yet. Send the first message below — it will appear here verbatim.</p>}
             {ui?.entries.map((en) => (
-              <ThreadEntry key={en.id} en={en} qByKey={qByKey} onOpenQuestion={openQuestion} onOpenFile={openFile} />
+              <ThreadEntry key={en.id} en={en} qByKey={qByKey} onOpenQuestion={openQuestion} onOpenFile={openFile} selectedKey={pane?.type === 'question' ? pane.key : null} />
             ))}
           </section>
           </div>
@@ -303,7 +300,7 @@ export default function Page() {
   );
 }
 
-function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile }: { en: Entry; qByKey: Map<string, QState>; onOpenQuestion: (k: string) => void; onOpenFile: (p: string) => void }) {
+function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile, selectedKey }: { en: Entry; qByKey: Map<string, QState>; onOpenQuestion: (k: string) => void; onOpenFile: (p: string) => void; selectedKey?: string | null }) {
   if (en.kind === 'question') {
     // The card face is ONLY eyebrow + prompt, and the whole card is the
     // button (Victor rule 1). No answer button, no options/prediction meta.
@@ -311,15 +308,36 @@ function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile }: { en: Entry; qB
     // once the question is answered/skipped, so the thread shows progress
     // at a glance — status only, never the answer content (the answer
     // itself stays in the pane and in its own answer entry below).
+    // v3.7 F4: the card OUTLINE is the status colour — blue = open /
+    // not yet answered, green = answered; skipped/struck keep the muted
+    // neutral border. The status word stays (colour is an addition,
+    // never the only signal). The "currently open in the pane" highlight
+    // is a background tint + shadow, NOT the blue outline (blue is taken).
     const qs = qByKey.get(en.payload.key);
     const status = qs?.state === 'answered' ? 'Answered' : qs?.state === 'skipped' ? 'Skipped' : qs?.state === 'struck' ? 'Struck' : null;
+    const outline = qs?.state === 'answered' ? '2px solid var(--success)' : qs?.state === 'open' ? '2px solid var(--info)' : '1px solid var(--border)';
+    const isSelected = selectedKey === en.payload.key;
+    // v3.7 F5: the question renders as a generative-UI-style WIDGET CARD in
+    // the stream — a composed card (header row: QUESTION eyebrow +
+    // load-bearing chip + status; prompt body; the recommendation, when
+    // the driver gave one, as a distinct sub-panel inside the card). Still
+    // status-only: never answer content. Whole card stays the button.
     return (
-      <button onClick={() => onOpenQuestion(en.payload.key)} style={{ textAlign: 'left', width: '100%', background: 'var(--card)', border: '1px solid var(--border)', borderRadius: 10, padding: '14px 16px', margin: '8px 0', cursor: 'pointer', minHeight: 48 }}>
+      <button data-card-status={qs?.state || 'open'} data-widget-card data-selected={isSelected || undefined} onClick={() => onOpenQuestion(en.payload.key)} style={{ textAlign: 'left', width: '100%', background: isSelected ? 'var(--accent-soft)' : 'var(--card)', border: outline, boxShadow: isSelected ? '0 2px 12px rgba(0,0,0,0.14)' : '0 1px 3px rgba(0,0,0,0.08)', borderRadius: 14, padding: '14px 16px', margin: '10px 0', cursor: 'pointer', minHeight: 48 }}>
         <span style={{ ...eyebrow, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
-          <span>Question</span>
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <span>Question</span>
+            {en.payload.load_bearing && <span style={{ letterSpacing: '0.04em', fontSize: 11, padding: '2px 7px', borderRadius: 999, background: 'var(--warning-soft)', color: 'var(--warning)', border: '1px solid var(--border)' }}>Load-bearing</span>}
+          </span>
           {status && <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', color: 'var(--foreground)' }}><CheckCircle size={14} /> {status}</span>}
         </span>
         <span style={{ display: 'block', fontSize: 16, lineHeight: 1.45, marginTop: 6, color: 'var(--card-foreground)', ...wrap }}>{en.payload.prompt || en.body}</span>
+        {en.payload.recommended && (
+          <span data-recommendation style={{ display: 'block', marginTop: 10, background: 'var(--muted)', borderRadius: 10, padding: '10px 12px' }}>
+            <span style={{ ...eyebrow, fontSize: 11 }}>Recommendation</span>
+            <span style={{ display: 'block', fontSize: 14, lineHeight: 1.5, marginTop: 4, color: 'var(--foreground)', ...wrap }}>{en.payload.recommended}</span>
+          </span>
+        )}
       </button>
     );
   }
@@ -328,7 +346,7 @@ function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile }: { en: Entry; qB
     const labels = (vals: string[]) => vals.map((v) => qs?.question?.options?.find((o: any) => o.value === v)?.label || v);
     const dialText = en.payload.dial_values ? Object.entries(en.payload.dial_values).map(([id, v]) => { const d = (qs?.question?.dials || []).find((x: any) => x.id === id); return `${d?.label || id}: ${v}${d?.unit ? ` ${d.unit}` : ''}`; }).join(' · ') : '';
     return (
-      <article style={{ padding: '10px 0 10px 14px', borderLeft: '3px solid var(--accent)', margin: '6px 0' }}>
+      <article data-answer-card style={{ padding: '12px 14px', borderLeft: '3px solid var(--success)', background: 'var(--muted)', borderRadius: '4px 12px 12px 4px', margin: '8px 0' }}>
         <p style={eyebrow}>Answer — {en.payload.question_key}</p>
         {en.payload.skipped ? <p style={{ lineHeight: 1.55 }}>Skipped — prediction stands.</p> : (
           <p style={{ lineHeight: 1.55, ...wrap }}>
@@ -363,11 +381,26 @@ function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile }: { en: Entry; qB
   if (en.kind === 'sharp') {
     return <p style={{ display: 'flex', gap: 8, alignItems: 'center', padding: '10px 0', fontSize: 14 }}><SealCheck size={17} /> Model declared sharp.</p>;
   }
+  // v3.7 F5: regular messages render as CHAT BUBBLES, modelled on the Muse
+  // chat interface — human right-aligned on a soft tint, driver
+  // left-aligned on a muted surface. Authorship is never colour alone:
+  // every bubble carries a sender label + time meta above it. System
+  // entries stay a quiet centred note (they are not conversation).
+  if (en.role === 'system') {
+    return (
+      <p data-bubble="system" style={{ textAlign: 'center', fontSize: 13, color: 'var(--muted-foreground)', padding: '8px 12px', margin: '6px 0', ...wrap }}>{en.body}</p>
+    );
+  }
+  const isHuman = en.role === 'human';
+  const sender = en.kind === 'want' ? 'Want — You' : isHuman ? 'You' : 'Driver';
+  const time = (() => { try { return new Date(en.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); } catch { return ''; } })();
   return (
-    <article style={{ padding: '12px 0', borderBottom: '1px solid var(--border)' }}>
-      <p style={eyebrow}>{en.role} · {en.kind}</p>
-      <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, ...wrap }}>{en.body}</p>
-    </article>
+    <div data-bubble={isHuman ? 'human' : 'driver'} style={{ display: 'flex', flexDirection: 'column', alignItems: isHuman ? 'flex-end' : 'flex-start', margin: '10px 0' }}>
+      <p style={{ ...eyebrow, fontSize: 11, margin: '0 4px 4px' }}>{sender}{time ? ` · ${time}` : ''}</p>
+      <div style={{ maxWidth: '85%', background: isHuman ? 'var(--accent-soft)' : 'var(--muted)', color: 'var(--foreground)', borderRadius: isHuman ? '18px 18px 4px 18px' : '18px 18px 18px 4px', padding: '10px 14px' }}>
+        <p style={{ whiteSpace: 'pre-wrap', lineHeight: 1.55, margin: 0, ...wrap }}>{en.body}</p>
+      </div>
+    </div>
   );
 }
 
@@ -377,14 +410,20 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
   const isPreview = q.type === 'preview';
   const variants: any[] = isPreview ? (q.variants || []) : [];
   const dials: any[] = isPreview ? (q.dials || []) : [];
-  const [choice, setChoice] = useState<string>(draft?.choice || '');
-  const [choices, setChoices] = useState<string[]>(draft?.choices || []);
-  const [otherText, setOtherText] = useState<string>(draft?.other_text || '');
-  const [comment, setComment] = useState<string>(draft?.comment || '');
-  // Dial state starts from the saved draft, else each dial's declared default.
+  // v3.7 F2: the form ALWAYS renders, answered or not — prefilled from the
+  // newest source: an in-progress draft (edits made since the answer) wins,
+  // then the current answer itself, then empty. Nothing collapses away
+  // after answering, so an answer can always be changed and re-saved.
+  const ans = qs.answer;
+  const [choice, setChoice] = useState<string>(draft?.choice || (ans && !ans.skipped ? (ans.choice || '') : ''));
+  const [choices, setChoices] = useState<string[]>(draft?.choices || (ans && !ans.skipped ? (ans.choices || []) : []));
+  const [otherText, setOtherText] = useState<string>(draft?.other_text || ans?.other_text || '');
+  const [comment, setComment] = useState<string>(draft?.comment || ans?.comment || '');
+  // Dial state starts from the saved draft, else the saved answer's dial
+  // values, else each dial's declared default.
   const [dialValues, setDialValues] = useState<Record<string, number>>(() => {
     const init: Record<string, number> = {};
-    for (const d of dials) init[d.id] = typeof draft?.dial_values?.[d.id] === 'number' ? draft.dial_values[d.id] : d.default;
+    for (const d of dials) init[d.id] = typeof draft?.dial_values?.[d.id] === 'number' ? draft.dial_values[d.id] : typeof ans?.dial_values?.[d.id] === 'number' ? ans.dial_values[d.id] : d.default;
     return init;
   });
   const [busy, setBusy] = useState(false);
@@ -394,16 +433,17 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
 
   // Draft autosave: every change persists (debounced) so typing survives a
   // reload with no driver present. Skipped on first render (that state came
-  // FROM the saved draft) and once the question is answered or frozen.
+  // FROM the saved draft/draft-or-answer) and once the project is frozen.
+  // v3.7 F2: edits to an ANSWERED question autosave as drafts too.
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
-    if (qs.answer || committed) return;
+    if (committed) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       fetch('/api/drafts', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ question_key: qs.key, choice: choice || null, choices: isMulti ? choices : null, other_text: otherText, comment, dial_values: isPreview ? dialValues : null }) }).catch(() => {});
     }, 400);
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
-  }, [choice, choices, otherText, comment, dialValues, qs.answer, committed, qs.key, isMulti, isPreview]);
+  }, [choice, choices, otherText, comment, dialValues, committed, qs.key, isMulti, isPreview]);
 
   const otherSelected = isMulti ? choices.includes('other') : choice === 'other';
 
@@ -424,40 +464,30 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
     // Victor rule 2: the pane STAYS OPEN after the answer lands (so a comment
     // can be added / the result reviewed). Only the X closes it. There is
     // deliberately no close call here.
-    setNotice(skipped ? 'Skip saved — the prediction stands. This pane stays open; close it with the X when you are done.' : `Answer saved. Provisional score: ${scoreLabel(j.score?.payload)}. This pane stays open; close it with the X when you are done.`);
+    const wasAnswered = !!qs.answer;
+    setNotice(skipped ? 'Skip saved — the prediction stands. This pane stays open; close it with the X when you are done.' : `${wasAnswered ? 'Answer updated' : 'Answer saved'}. Provisional score: ${scoreLabel(j.score?.payload)}. This pane stays open; close it with the X when you are done.`);
     await reload();
   }
-
-  const answeredDialText = qs.answer?.dial_values ? Object.entries(qs.answer.dial_values).map(([id, v]) => { const d = dials.find((x: any) => x.id === id); return `${d?.label || id}: ${v}${d?.unit ? ` ${d.unit}` : ''}`; }).join(' · ') : '';
-  // The answered view names the chosen options by their LABELS, exactly
-  // like the thread's answer entry does — never the raw values (P5 audit:
-  // the pane showed 'tall' / 'other' where the thread showed the labels).
-  const answeredLabels = qs.answer && !qs.answer.skipped ? (isMulti ? (qs.answer.choices || []) : [qs.answer.choice].filter(Boolean)).map((v: string) => (q.options || []).find((o: any) => o.value === v)?.label || v).join(', ') : '';
-  const answeredOtherSelected = !!qs.answer && (qs.answer.choice === 'other' || (qs.answer.choices || []).includes('other'));
 
   const paneHeader = (
     <>
       <p style={eyebrow}>Question{qs.question.load_bearing ? ' · load-bearing' : ''}{isPreview ? ' · preview' : ''}</p>
       <h2 style={{ fontSize: 18, lineHeight: 1.35, margin: '8px 0 14px', ...wrap }}>{q.prompt}</h2>
+      {/* v3.7 F2: an answered question keeps its full form below — this line
+          states the current state and that editing is expected. A changed
+          answer lands as a new provisional score until the driver judges
+          it (existing scoring display rules). */}
+      {qs.answer && (
+        <div data-answered-note style={{ marginBottom: 14 }}>
+          <p style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14, margin: '0 0 6px' }}><CheckCircle size={17} /> {qs.answer.skipped ? 'Skipped — pick an answer below to replace the skip.' : 'Answered — change anything below and save to update your answer.'}</p>
+          {qs.score ? <p style={{ fontSize: 13, padding: '6px 10px', borderRadius: 6, background: 'var(--muted)', margin: 0 }}>Score: {scoreLabel(qs.score)} · {qs.score.reason} · {qs.score.source}</p> : null}
+        </div>
+      )}
     </>
   );
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
-      {qs.answer ? (
-        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 20px' }}>
-          {paneHeader}
-          <p style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}><CheckCircle size={17} /> Answered</p>
-          <p style={{ lineHeight: 1.6, fontSize: 14, ...wrap }}>
-            {qs.answer.skipped ? 'Skipped — prediction stands.' : answeredLabels}
-            {answeredOtherSelected && qs.answer.other_text ? `: ${qs.answer.other_text}` : ''}
-          </p>
-          {answeredDialText ? <p style={{ lineHeight: 1.6, fontSize: 14, ...wrap }}>Dials — {answeredDialText}</p> : null}
-          {qs.answer.comment ? <p style={{ lineHeight: 1.6, fontSize: 14, color: 'var(--muted-foreground)', ...wrap }}>Comment: {qs.answer.comment}</p> : null}
-          {qs.score ? <p style={{ fontSize: 13, padding: '6px 10px', borderRadius: 6, background: 'var(--muted)' }}>Score: {scoreLabel(qs.score)} · {qs.score.reason} · {qs.score.source}</p> : null}
-          {notice ? <p role="status" style={{ fontSize: 13, marginTop: 10 }}>{notice}</p> : null}
-        </div>
-      ) : (
         <form onSubmit={(e) => { e.preventDefault(); submit(false); }} style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, height: '100%' }}>
           <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '4px 16px 16px' }}>
           {paneHeader}
@@ -585,7 +615,6 @@ function QuestionPane({ qs, draft, committed, notice, setNotice, reload }: { qs:
           {notice ? <p role="status" style={{ fontSize: 13, marginTop: 10 }}>{notice}</p> : null}
           </div>
         </form>
-      )}
     </div>
   );
 }
