@@ -163,6 +163,79 @@ test('presence (v3.7 F1): absent before any touch, fresh after touch, stale past
   assert.equal(store.getState().presence.source, 'ds-wake');
 });
 
+test('v4 artifacts: post_artifact versions content and carries title + kind; patch inherits both', () => {
+  const page = (n: number) => `<!doctype html><html><head><title>T</title></head><body><main id="hero"><h1>Hi ${n}</h1></main></body></html>`;
+  let s = store.stageAction('post_artifact', { path: 'design/home.html', title: 'Home page', content: page(1) });
+  assert.equal(s.ok, true, JSON.stringify(s));
+  assert.equal(store.endTurn().ok, true);
+  let art = store.getUiState().artifacts.find((a: any) => a.path === 'design/home.html');
+  assert.ok(art); assert.equal(art.version, 1); assert.equal(art.title, 'Home page'); assert.equal(art.kind, 'generated'); assert.equal(art.versions, 1);
+  s = store.stageAction('patch_artifact', { path: 'design/home.html', content: page(2) });
+  assert.equal(s.ok, true);
+  assert.equal(store.endTurn().ok, true);
+  art = store.getUiState().artifacts.find((a: any) => a.path === 'design/home.html');
+  assert.equal(art.version, 2); assert.equal(art.title, 'Home page', 'title inherits across versions'); assert.equal(art.kind, 'generated');
+  assert.equal(store.getFileVersion('design/home.html', 1).content, page(1), 'old versions stay viewable verbatim');
+});
+
+test('v4 artifacts: the script-free page gate rejects at end_turn and leaves the turn open', () => {
+  store.stageAction('post_artifact', { path: 'design/bad.html', content: '<html><body><script>alert(1)</script></body></html>' });
+  let r = store.endTurn();
+  assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'unsafe_artifact'), JSON.stringify(r.errors));
+  store.discardTurn();
+  store.stageAction('post_artifact', { path: 'design/bad2.html', content: '<html><body><img src="https://example.com/x.png"></body></html>' });
+  r = store.endTurn();
+  assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'unsafe_artifact'), 'generated artifacts may not load external resources');
+  store.discardTurn();
+  // The same external image is fine in a snapshot (captured assets), scripts still are not.
+  const s = store.stageAction('post_artifact', { path: 'design/snap.html', kind: 'snapshot', title: 'Captured', content: '<html><body><img src="https://example.com/x.png"></body></html>' });
+  assert.equal(s.ok, true);
+  assert.equal(store.endTurn().ok, true);
+  const art = store.getUiState().artifacts.find((a: any) => a.path === 'design/snap.html');
+  assert.equal(art.kind, 'snapshot');
+});
+
+test('v4 annotations: addAnnotation validates, dedupes by agentation_id, clamps version', () => {
+  const bad = store.addAnnotation({ artifact_path: 'design/nope.html', artifact_version: 1, comment: 'hi' });
+  assert.equal(bad.ok, false); assert.equal((bad as any).errors[0].code, 'unknown_artifact');
+  const a1 = store.addAnnotation({ artifact_path: 'design/home.html', artifact_version: 99, agentation_id: 'ag-test-1', element_path: 'main > header', element_id: 'hero', element_text: 'Hi 2', comment: 'Hero headline wraps oddly' });
+  assert.equal(a1.ok, true);
+  if (a1.ok) assert.equal((a1.entry.payload as any).artifact_version, 2, 'version clamped to the latest existing version');
+  const dup = store.addAnnotation({ artifact_path: 'design/home.html', artifact_version: 2, agentation_id: 'ag-test-1', comment: 'Hero headline wraps oddly' });
+  assert.equal(dup.ok, true); if (dup.ok) assert.equal((dup as any).deduped, true);
+  const anns = store.getUiState().annotations.filter((x: any) => x.agentation_id === 'ag-test-1');
+  assert.equal(anns.length, 1); assert.equal(anns[0].status, 'open');
+});
+
+test('v4 annotations: the webhook path (different agentation id, same content) dedupes against the mirror entry', () => {
+  const again = store.addAnnotation({ artifact_path: 'design/home.html', artifact_version: 2, agentation_id: 'server-side-id-9', element_path: 'main > header', element_id: 'hero', element_text: 'Hi 2', comment: 'Hero headline wraps oddly' });
+  assert.equal(again.ok, true); if (again.ok) assert.equal((again as any).deduped, true, 'content identity converges the two intake paths');
+  const anns = store.getUiState().annotations.filter((x: any) => x.comment === 'Hero headline wraps oddly');
+  assert.equal(anns.length, 1);
+});
+
+test('v4 annotations: driver reply + resolve flow through end_turn; double resolve rejects', () => {
+  const ann = store.getUiState().annotations.find((x: any) => x.agentation_id === 'ag-test-1');
+  assert.ok(ann);
+  let s = store.stageAction('reply_annotation', { annotation_entry_id: 99999, body: 'orphan' });
+  assert.equal(s.ok, true); // staging is permissive; the gate judges
+  let r = store.endTurn();
+  assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'unknown_annotation'), JSON.stringify(r.errors));
+  store.discardTurn();
+  s = store.stageAction('reply_annotation', { annotation_entry_id: ann.entry_id, body: 'Fixed in the next version.' });
+  assert.equal(s.ok, true);
+  s = store.stageAction('resolve_annotation', { annotation_entry_id: ann.entry_id, summary: 'Headline no longer wraps' });
+  assert.equal(s.ok, true);
+  r = store.endTurn();
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const after = store.getUiState().annotations.find((x: any) => x.entry_id === ann.entry_id);
+  assert.equal(after.status, 'resolved'); assert.equal(after.replies.length, 1); assert.equal(after.resolution?.summary, 'Headline no longer wraps');
+  store.stageAction('resolve_annotation', { annotation_entry_id: ann.entry_id });
+  r = store.endTurn();
+  assert.equal(r.ok, false); assert.ok(r.errors.some((e: any) => e.code === 'already_resolved'));
+  store.discardTurn();
+});
+
 test('commit freeze: driver writes reject once the project is committed', () => {
   dbmod.sqlite.prepare("UPDATE projects SET status='committed', committed_at=? WHERE id='proj_default'").run(new Date().toISOString());
   const r = store.stageAction('post_message', { body: 'should reject' });

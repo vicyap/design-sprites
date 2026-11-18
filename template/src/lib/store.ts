@@ -6,7 +6,7 @@
 // base_head no longer equals the record head is rejected as stale.
 import crypto from 'node:crypto';
 import { sqlite, ensureProject, getProject, getHead, insertEntry, listEntries, safeParse } from './db';
-import { validateQuestion, withOther, previewOptions, provisionalScore, judgementScore, deriveQuestions, sharpnessGate, validateArtifactIds, extractElementIds, type GateError, type QuestionPayload } from './protocol';
+import { validateQuestion, withOther, previewOptions, provisionalScore, judgementScore, deriveQuestions, sharpnessGate, validateArtifactIds, extractElementIds, artifactSafetyViolation, deriveArtifacts, deriveAnnotations, MAX_ARTIFACT_CHARS, type GateError, type QuestionPayload, type ArtifactKind } from './protocol';
 import { buildZip, type ZipEntry } from './zip';
 import { emit } from './observe';
 
@@ -193,6 +193,7 @@ export function endTurn(): { ok: boolean; errors?: GateError[]; head?: number; t
   if (!turn) return { ok: false, errors: [{ code: 'no_open_turn', message: 'no open turn to commit; stage an action first' }] };
   const errors: GateError[] = [];
   const committed: { tool: string; entry_id?: number }[] = [];
+  const annotationSyncs: { agentationId: string | null; action: { type: 'reply'; body: string } | { type: 'resolve'; summary: string }; match?: { element_path: string; comment: string } }[] = [];
   let newHead = getHead();
   try {
     const tx = sqlite.transaction(() => {
@@ -229,8 +230,28 @@ export function endTurn(): { ok: boolean; errors?: GateError[]; head?: number; t
         } else if (a.tool === 'post_artifact' || a.tool === 'patch_artifact') {
           const prev = latestFile(a.args?.path || '');
           if (a.tool === 'patch_artifact' && !prev) errors.push({ code: 'not_found', message: `patch_artifact: no existing file at ${a.args?.path}` });
+          if (a.args?.kind !== undefined && a.args.kind !== 'generated' && a.args.kind !== 'snapshot') errors.push({ code: 'validation', message: `artifact kind must be generated|snapshot, got: ${String(a.args.kind)}` });
+          if (a.args?.title !== undefined && (typeof a.args.title !== 'string' || !a.args.title.trim())) errors.push({ code: 'validation', message: 'artifact title must be a non-empty string when given' });
           if (typeof a.args?.content !== 'string') errors.push({ code: 'validation', message: 'artifact content (string) is required' });
-          else errors.push(...validateArtifactIds(a.args.path, a.args.content, prev ? extractElementIds(prev.content) : null));
+          else {
+            // v4: artifacts are design-surface pages — size cap + the
+            // script-free page gate (kind inherited from the previous
+            // version's entry when not restated).
+            const prevEntry = (entriesNow as any[]).filter((e) => e.kind === 'artifact' && e.payload?.path === a.args?.path).pop();
+            const kind: ArtifactKind = a.args?.kind || prevEntry?.payload?.kind || 'generated';
+            if (a.args.content.length > MAX_ARTIFACT_CHARS) errors.push({ code: 'artifact_too_large', message: `artifact ${a.args.path} is ${a.args.content.length} chars; max is ${MAX_ARTIFACT_CHARS}` });
+            const violation = artifactSafetyViolation(a.args.content, kind);
+            if (violation) errors.push({ code: 'unsafe_artifact', message: `artifact ${a.args.path} is not a safe ${kind} page: ${violation}` });
+            errors.push(...validateArtifactIds(a.args.path, a.args.content, prev ? extractElementIds(prev.content) : null));
+          }
+        } else if (a.tool === 'reply_annotation') {
+          const target = entriesNow.find((e) => e.id === Number(a.args?.annotation_entry_id));
+          if (!target || target.kind !== 'annotation') errors.push({ code: 'unknown_annotation', message: `reply_annotation references unknown annotation entry ${a.args?.annotation_entry_id}` });
+          if (typeof a.args?.body !== 'string' || !a.args.body.trim()) errors.push({ code: 'validation', message: 'reply_annotation body is required' });
+        } else if (a.tool === 'resolve_annotation') {
+          const target = entriesNow.find((e) => e.id === Number(a.args?.annotation_entry_id));
+          if (!target || target.kind !== 'annotation') errors.push({ code: 'unknown_annotation', message: `resolve_annotation references unknown annotation entry ${a.args?.annotation_entry_id}` });
+          else if (deriveAnnotations(entriesNow).find((x) => x.entry_id === target.id)?.status === 'resolved') errors.push({ code: 'already_resolved', message: `annotation ${target.id} is already resolved` });
         } else if (a.tool === 'write_model') {
           if (typeof a.args?.content !== 'string' || !a.args.content.trim()) errors.push({ code: 'validation', message: 'write_model content is required' });
         } else if (a.tool === 'post_message') {
@@ -292,12 +313,28 @@ export function endTurn(): { ok: boolean; errors?: GateError[]; head?: number; t
           committed.push({ tool: a.tool, entry_id: e.id });
         } else if (a.tool === 'post_artifact' || a.tool === 'patch_artifact') {
           const v = writeFileVersion(pid, a.args.path, a.args.content);
-          const e = insertEntry(pid, 'artifact', 'driver', '', { path: a.args.path, version: v });
+          // v4: the artifact entry carries title + kind for the design
+          // surface; both are inherited from the previous version's entry
+          // when a rewrite does not restate them.
+          const prevEntry = (listEntries() as any[]).filter((e) => e.kind === 'artifact' && e.payload?.path === a.args.path).pop();
+          const title = a.args.title || prevEntry?.payload?.title || undefined;
+          const kind: ArtifactKind = a.args.kind || prevEntry?.payload?.kind || 'generated';
+          const e = insertEntry(pid, 'artifact', 'driver', '', { path: a.args.path, version: v, ...(title ? { title } : {}), kind });
           committed.push({ tool: a.tool, entry_id: e.id });
         } else if (a.tool === 'write_model') {
           const v = writeFileVersion(pid, 'model.md', a.args.content);
           const e = insertEntry(pid, 'model', 'driver', '', { path: 'model.md', version: v });
           committed.push({ tool: a.tool, entry_id: e.id });
+        } else if (a.tool === 'reply_annotation') {
+          const e = insertEntry(pid, 'annotation_reply', 'driver', a.args.body, { annotation_entry_id: Number(a.args.annotation_entry_id) });
+          committed.push({ tool: a.tool, entry_id: e.id });
+          const target = entriesNow.find((x) => x.id === Number(a.args.annotation_entry_id));
+          annotationSyncs.push({ agentationId: (target?.payload as any)?.agentation_id ?? null, action: { type: 'reply', body: a.args.body }, match: target ? { element_path: String((target.payload as any)?.element_path ?? ''), comment: target.body } : undefined });
+        } else if (a.tool === 'resolve_annotation') {
+          const e = insertEntry(pid, 'annotation_resolve', 'driver', '', { annotation_entry_id: Number(a.args.annotation_entry_id), summary: typeof a.args.summary === 'string' ? a.args.summary : '' });
+          committed.push({ tool: a.tool, entry_id: e.id });
+          const target = entriesNow.find((x) => x.id === Number(a.args.annotation_entry_id));
+          annotationSyncs.push({ agentationId: (target?.payload as any)?.agentation_id ?? null, action: { type: 'resolve', summary: typeof a.args.summary === 'string' ? a.args.summary : '' }, match: target ? { element_path: String((target.payload as any)?.element_path ?? ''), comment: target.body } : undefined });
         } else if (a.tool === 'declare_sharp') {
           const e = insertEntry(pid, 'sharp', 'driver', '', { event: 'sharp' });
           committed.push({ tool: a.tool, entry_id: e.id });
@@ -316,6 +353,7 @@ export function endTurn(): { ok: boolean; errors?: GateError[]; head?: number; t
     throw err;
   }
   emit('mcp.end_turn', 'succeeded', 'ok', { turn: turn.id, head: newHead, actions: committed.length });
+  for (const s of annotationSyncs) void syncAnnotationToAgentation(s.agentationId, s.action, s.match);
   return { ok: true, turn_id: turn.id, head: newHead, committed };
 }
 
@@ -357,6 +395,7 @@ export function getState() {
     questions: questions.map((q) => ({ key: q.key, type: q.question.type, load_bearing: !!q.question.load_bearing, state: q.state, score: q.score ? { result: q.score.result, provisional: q.score.provisional, reason: q.score.reason } : null })),
     open_turn: turn ? { id: turn.id, base_head: turn.baseHead, staged: turn.actions.map((a) => a.tool) } : null,
     files: listFiles(),
+    annotations: deriveAnnotations(entries),
     presence: getPresence(),
   };
 }
@@ -364,6 +403,66 @@ export function getState() {
 export function listAllFileVersions(): { path: string; version: number; content: string; createdAt: string }[] {
   const pid = ensureProject();
   return sqlite.prepare("SELECT path,version,content,created_at as createdAt FROM file_versions WHERE project_id=? ORDER BY path ASC, version ASC").all(pid) as any[];
+}
+
+// v4 F2: an annotation from the Agentation toolbar (client mirror or the
+// agentation-mcp action webhook) lands in the record immediately, like any
+// human entry. Deduped by agentation_id so the two paths and webhook
+// retries can never double-record one annotation.
+export function addAnnotation(input: { artifact_path: string; artifact_version: number; agentation_id?: string | null; element_path?: string; element_id?: string | null; element_text?: string; comment: string }) {
+  const project = getProject();
+  if (project.status === 'committed') return { ok: false as const, errors: [{ code: 'commit_freeze', message: 'project is committed; the record is frozen' }] };
+  const comment = typeof input?.comment === 'string' ? input.comment.trim() : '';
+  if (!comment || comment.length > 8000) return { ok: false as const, errors: [{ code: 'validation', message: 'annotation comment required (1-8000 chars)' }] };
+  const entries = listEntries();
+  const artifact = deriveArtifacts(entries).find((a) => a.path === input.artifact_path);
+  if (!artifact) return { ok: false as const, errors: [{ code: 'unknown_artifact', message: `no artifact at path ${input.artifact_path}` }] };
+  const version = Math.min(Math.max(1, Math.floor(Number(input.artifact_version) || artifact.version)), artifact.version);
+  // Dedupe on EITHER identity: the toolbar's client-side id (mirror path)
+  // or the agentation server's own id (webhook path) differ for the same
+  // human note, so content identity (artifact + version + element path +
+  // verbatim comment) is the convergence key across the two paths.
+  const existing = entries.find((e) => {
+    if (e.kind !== 'annotation') return false;
+    const p = (e.payload as any) || {};
+    if (input.agentation_id && p.agentation_id === input.agentation_id) return true;
+    return p.artifact_path === artifact.path && p.artifact_version === version && p.element_path === String(input.element_path ?? '') && e.body === comment;
+  });
+  if (existing) return { ok: true as const, entry: existing, deduped: true };
+  const entry = insertEntry(ensureProject(), 'annotation', 'human', comment, { artifact_path: artifact.path, artifact_version: version, agentation_id: input.agentation_id ?? null, element_path: String(input.element_path ?? '').slice(0, 500), element_id: input.element_id ?? null, element_text: String(input.element_text ?? '').slice(0, 500) });
+  emit('annotation.add', 'succeeded', 'ok', { entry: entry.id, artifact: artifact.path, version });
+  return { ok: true as const, entry, deduped: false };
+}
+
+// Best-effort reflection of a driver reply/resolve into the Agentation
+// toolbar's own store, so its markers match the record. The record is the
+// truth; a failed sync (agentation service down) never fails the turn.
+// The record may carry the toolbar's CLIENT-side annotation id while the
+// server store keys on its own id — on a 404, resolve the server id live
+// by content (element path + verbatim comment) and retry once.
+async function syncAnnotationToAgentation(agentationId: string | null, action: { type: 'reply'; body: string } | { type: 'resolve'; summary: string }, match?: { element_path: string; comment: string }) {
+  const base = 'http://127.0.0.1:4747';
+  const call = async (id: string): Promise<boolean> => {
+    if (action.type === 'resolve') {
+      const r = await fetch(`${base}/annotations/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'resolved', resolvedBy: 'agent' }), signal: AbortSignal.timeout(1500) });
+      if (!r.ok) return false;
+      if (action.summary) await fetch(`${base}/annotations/${encodeURIComponent(id)}/thread`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'agent', content: `Resolved: ${action.summary}` }), signal: AbortSignal.timeout(1500) });
+      return true;
+    }
+    const r = await fetch(`${base}/annotations/${encodeURIComponent(id)}/thread`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ role: 'agent', content: action.body }), signal: AbortSignal.timeout(1500) });
+    return r.ok;
+  };
+  try {
+    if (agentationId && await call(agentationId)) return;
+    if (match) {
+      const sessions = await (await fetch(`${base}/sessions`, { signal: AbortSignal.timeout(1500) })).json().catch(() => []);
+      for (const s of (Array.isArray(sessions) ? sessions : [])) {
+        const full = await (await fetch(`${base}/sessions/${s.id}`, { signal: AbortSignal.timeout(1500) })).json().catch(() => null);
+        const hit = (full?.annotations || []).find((a: any) => a.elementPath === match.element_path && a.comment === match.comment);
+        if (hit) { await call(String(hit.id)); return; }
+      }
+    }
+  } catch { /* toolbar state is a view; the record already carries the action */ }
 }
 
 // Full UI state for the human surface: verbatim entries, full question
@@ -381,6 +480,8 @@ export function getUiState() {
     sharpness: { sharp: gate.sharp, answered_load_bearing: gate.answered_load_bearing, errors: gate.errors },
     sharp_declared: entries.some((e) => e.kind === 'sharp'),
     files: listFiles(),
+    artifacts: deriveArtifacts(entries),
+    annotations: deriveAnnotations(entries),
     drafts: listDrafts(),
     presence: getPresence(),
   };

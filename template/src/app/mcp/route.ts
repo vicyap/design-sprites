@@ -43,12 +43,12 @@ function buildServer() {
     dials: z.array(z.object({ id: z.string().min(1), label: z.string().min(1), min: z.number(), max: z.number(), step: z.number(), default: z.number(), unit: z.string().optional() })).optional(),
   }, async (a) => stage('post_question', a));
 
-  server.tool('post_artifact', 'Stage a new versioned artifact file (full content). Stable element ids (id="...") in HTML must be unique, and a rewrite of an existing path must keep all previous element ids.', {
-    path: z.string().min(1), content: z.string(),
+  server.tool('post_artifact', 'Stage a new versioned artifact (full content) — a design-surface page the human sees as a widget card in the thread and opens in layout mode. Every write is a NEW version; old versions stay viewable. Optional title (shown on the card; inherited by later versions when omitted) and kind: "generated" (default — a page you authored; must be fully self-contained) or "snapshot" (a static capture of an existing page; external assets allowed, scripts must be stripped at capture). Artifacts are SCRIPT-FREE, gated at end_turn: no <script>, no inline on*= handlers, no javascript: URIs; generated artifacts additionally allow no external resources at all (inline styles/SVG and data:image or #fragment CSS url() only), max 200000 chars. Stable element ids (id="...") in HTML must be unique, and a rewrite of an existing path must keep all previous element ids (annotations anchor to them).', {
+    path: z.string().min(1), content: z.string(), title: z.string().min(1).optional(), kind: z.enum(['generated', 'snapshot']).optional(),
   }, async (a) => stage('post_artifact', a));
 
-  server.tool('patch_artifact', 'Stage a new version of an existing artifact file (full content; patch-only is dropped in v3, but stable element ids are still enforced).', {
-    path: z.string().min(1), content: z.string(),
+  server.tool('patch_artifact', 'Stage a new version of an existing artifact (full content; patch-only is dropped, but stable element ids are still enforced). Title/kind are inherited from the previous version unless restated. Same script-free gate as post_artifact.', {
+    path: z.string().min(1), content: z.string(), title: z.string().min(1).optional(), kind: z.enum(['generated', 'snapshot']).optional(),
   }, async (a) => stage('patch_artifact', a));
 
   server.tool('write_model', 'Stage a full write of model.md (re-derived from the verbatim record, never a summary). Commits as a new file version at end_turn.', {
@@ -70,7 +70,7 @@ function buildServer() {
 
   server.tool('discard_turn', 'Discard the open turn and all its staged actions without committing.', {}, async () => ok(store.discardTurn()));
 
-  server.tool('get_state', 'Current project state: head, questions with states and scores, sharpness gate status, open turn, files.', {}, async () => ok(store.getState()));
+  server.tool('get_state', 'Current project state: head, questions with states and scores, sharpness gate status, open turn, files, annotations (v4).', {}, async () => ok(store.getState()));
 
   server.tool('get_record', 'Record entries (verbatim, append-only) with id greater than `since` (default 0 = all).', {
     since: z.number().int().min(0).optional(),
@@ -86,6 +86,21 @@ function buildServer() {
   });
 
   server.tool('export_bundle', 'Export the whole project as a bundle object: project, verbatim entries, latest file contents, transcript markdown.', {}, async () => ok(store.exportBundle()));
+
+  server.tool('list_annotations', 'Read the human\'s element annotations on artifacts (v4): each carries its entry_id, the artifact path + version it was made against, the element identity (element_path, stable element_id, element_text), the note, open/resolved status, driver replies, and any resolution. Optional status filter: open | resolved.', {
+    status: z.enum(['open', 'resolved']).optional(),
+  }, async (a) => {
+    const all = store.getState().annotations;
+    return ok({ annotations: a.status ? all.filter((x) => x.status === a.status) : all });
+  });
+
+  server.tool('reply_annotation', 'Stage a reply to one annotation (annotation_entry_id from list_annotations). Recorded verbatim, shown with the annotation in the thread and layout mode, and reflected into the annotator thread at end_turn.', {
+    annotation_entry_id: z.number().int().positive(), body: z.string().min(1).max(8000),
+  }, async (a) => stage('reply_annotation', a));
+
+  server.tool('resolve_annotation', 'Stage resolution of one annotation (annotation_entry_id) once its note is addressed — normally by shipping a new artifact version. Resolution is a NEW record entry (the annotation is never mutated) and clears the marker in the annotator. Optional summary says what changed.', {
+    annotation_entry_id: z.number().int().positive(), summary: z.string().max(2000).optional(),
+  }, async (a) => stage('resolve_annotation', a));
 
   server.tool('wait_for_input', 'Blocking long-poll: returns new HUMAN entries (answers, messages) since `since` head as soon as any arrive, or times out cleanly ({timed_out:true}) so you can re-call. Default timeout 20000ms, max 50000ms.', {
     since: z.number().int().min(0),

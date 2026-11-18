@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState, FormEvent, type CSSProperties } from 'react';
-import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, LockKey, CheckCircle, SealCheck, ArrowRight, Broadcast } from '@phosphor-icons/react';
+import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, LockKey, CheckCircle, SealCheck, ArrowRight, Broadcast, FrameCorners, Camera } from '@phosphor-icons/react';
 
 // Design Sprites v3 — full UI (P3, descoped per Amendment 2: chat + decisions
 // only; NO artifact pane or inspector). v3.5 P2 adds the preview question
@@ -16,7 +16,8 @@ import { PaperPlaneTilt, HourglassMedium, X, List, FileText, DownloadSimple, Loc
 
 type Entry = { id: number; kind: string; role: string; body: string; payload: any; createdAt: string };
 type QState = { key: string; question: any; answer?: any; answerId?: number; score?: any; state: string };
-type UiState = { project: any; head: number; entries: Entry[]; questions: QState[]; sharpness: any; sharp_declared: boolean; files: any[]; drafts: any[]; presence?: { driver_present: boolean; label: string | null; source: string | null; last_seen: string | null } };
+type AnnState = { entry_id: number; artifact_path: string; artifact_version: number; element_path: string; element_id: string | null; element_text: string; comment: string; status: 'open' | 'resolved'; replies: { entry_id: number; body: string; at: string }[]; resolution: { entry_id: number; summary: string; at: string } | null };
+type UiState = { project: any; head: number; entries: Entry[]; questions: QState[]; sharpness: any; sharp_declared: boolean; files: any[]; drafts: any[]; artifacts?: any[]; annotations?: AnnState[]; presence?: { driver_present: boolean; label: string | null; source: string | null; last_seen: string | null } };
 type Pane = { type: 'question'; key: string } | { type: 'file'; path: string } | null;
 
 const eyebrow: CSSProperties = { letterSpacing: '0.08em', textTransform: 'uppercase', fontSize: 12, color: 'var(--muted-foreground)' };
@@ -88,6 +89,19 @@ export default function Page() {
   }, []);
   useEffect(() => { load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
 
+  // v4 navigation model: the THREAD is home; layout mode is a separate
+  // route. Leaving for layout mode and coming back must land on the exact
+  // thread position — the scroll offset is kept in sessionStorage and
+  // restored once the entries have rendered.
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  const scrollRestoredRef = useRef(false);
+  useEffect(() => {
+    if (!ui || scrollRestoredRef.current) return;
+    const saved = Number(sessionStorage.getItem('ds-thread-scroll') || 0);
+    scrollRestoredRef.current = true;
+    if (saved > 0) requestAnimationFrame(() => { if (threadScrollRef.current) threadScrollRef.current.scrollTop = saved; });
+  }, [ui]);
+
   // Escape closes the topmost overlay (mobile drawer first, then the pane) —
   // keyboard parity with the X buttons (P3.5 accessibility audit: neither
   // overlay responded to Escape before this).
@@ -100,6 +114,7 @@ export default function Page() {
 
   const committed = ui?.project?.status === 'committed';
   const qByKey = new Map((ui?.questions || []).map((q) => [q.key, q]));
+  const annByEntry = new Map((ui?.annotations || []).map((a) => [a.entry_id, a]));
 
   // v3.6 F1/F2: questions stay in thread order (deriveQuestions preserves
   // record order). Progress counts answered + skipped only; the navigator
@@ -165,8 +180,8 @@ export default function Page() {
         <ul style={{ listStyle: 'none', margin: '6px 0 0', padding: 0, display: 'flex', flexDirection: 'column', gap: 2 }}>
           {explorer.map((f) => (
             <li key={f.path}>
-              <button onClick={() => { openFile(f.path); setNavOpen(false); }} style={{ display: 'flex', gap: 8, alignItems: 'center', width: '100%', textAlign: 'left', minHeight: 44, padding: '6px 8px', borderRadius: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 14 }}>
-                <FileText size={17} /> <span style={{ ...wrap, minWidth: 0 }}>{f.path}</span>{f.version ? <span style={{ color: 'var(--muted-foreground)', fontSize: 12 }}>v{f.version}</span> : null}
+              <button onClick={() => { openFile(f.path); setNavOpen(false); }} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', width: '100%', textAlign: 'left', minHeight: 44, padding: '6px 8px', borderRadius: 6, background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 14 }}>
+                <FileText size={17} style={{ flexShrink: 0, marginTop: 2 }} /> <span style={{ ...wrap, minWidth: 0, flex: 1 }}>{f.path}</span>{f.version ? <span style={{ color: 'var(--muted-foreground)', fontSize: 12, flexShrink: 0 }}>v{f.version}</span> : null}
               </button>
             </li>
           ))}
@@ -204,11 +219,11 @@ export default function Page() {
       {/* Centre chat thread */}
       <main style={{ flex: 1, minWidth: 0, display: 'flex', justifyContent: 'center', height: '100%', overflow: 'hidden' }}>
         <div style={{ width: '100%', maxWidth: '65ch', display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-          <div data-thread-scroll style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 16px 16px' }}>
+          <div data-thread-scroll ref={threadScrollRef} onScroll={(e) => { try { sessionStorage.setItem('ds-thread-scroll', String((e.target as HTMLDivElement).scrollTop)); } catch {} }} style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '24px 16px 16px' }}>
           <header style={{ borderBottom: '1px solid var(--border)', paddingBottom: 16, marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <button aria-label="Open menu" className="lg:hidden" onClick={() => setNavOpen(true)} style={{ minHeight: 44, minWidth: 44, background: 'transparent', border: 'none', cursor: 'pointer' }}><List size={22} /></button>
-              <p style={eyebrow}>Design Sprites v3</p>
+              <p style={eyebrow}>Design Sprites v4</p>
             </div>
             <h1 style={{ fontSize: 28, lineHeight: 1.2, margin: '8px 0', ...wrap }}>{ui?.project?.title || 'Project stream'}</h1>
             {ui && <p data-progress style={{ fontSize: 14, color: 'var(--muted-foreground)', margin: '0 0 10px' }}>{answeredCount} of {questions.length} answered</p>}
@@ -234,7 +249,7 @@ export default function Page() {
             {!ui && <p>Loading the record…</p>}
             {ui && ui.entries.length === 0 && <p>No entries yet. Send the first message below — it will appear here verbatim.</p>}
             {ui?.entries.map((en) => (
-              <ThreadEntry key={en.id} en={en} qByKey={qByKey} onOpenQuestion={openQuestion} onOpenFile={openFile} selectedKey={pane?.type === 'question' ? pane.key : null} />
+              <ThreadEntry key={en.id} en={en} qByKey={qByKey} annByEntry={annByEntry} onOpenQuestion={openQuestion} onOpenFile={openFile} selectedKey={pane?.type === 'question' ? pane.key : null} />
             ))}
           </section>
           </div>
@@ -300,7 +315,7 @@ export default function Page() {
   );
 }
 
-function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile, selectedKey }: { en: Entry; qByKey: Map<string, QState>; onOpenQuestion: (k: string) => void; onOpenFile: (p: string) => void; selectedKey?: string | null }) {
+function ThreadEntry({ en, qByKey, annByEntry, onOpenQuestion, onOpenFile, selectedKey }: { en: Entry; qByKey: Map<string, QState>; annByEntry: Map<number, AnnState>; onOpenQuestion: (k: string) => void; onOpenFile: (p: string) => void; selectedKey?: string | null }) {
   if (en.kind === 'question') {
     // The card face is ONLY eyebrow + prompt, and the whole card is the
     // button (Victor rule 1). No answer button, no options/prediction meta.
@@ -365,6 +380,69 @@ function ThreadEntry({ en, qByKey, onOpenQuestion, onOpenFile, selectedKey }: { 
       <p style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 10px', margin: '4px 0', borderRadius: 6, background: s.result === 'hit' ? 'var(--success-soft)' : s.result === 'miss' ? 'var(--warning-soft)' : 'var(--muted)', color: 'var(--foreground)' }}>
         {s.result === 'hit' ? <SealCheck size={16} /> : <CheckCircle size={16} />}
         <span style={{ ...wrap, minWidth: 0 }}>Score — {s.question_key}: {scoreLabel(s)} · {s.reason} · {s.source}</span>
+      </p>
+    );
+  }
+  if (en.kind === 'artifact') {
+    // v4 F1: an artifact version write renders as a WIDGET CARD in the
+    // thread (same card family as questions): ARTIFACT eyebrow + kind chip,
+    // title, version. The whole card is the link into layout mode at THIS
+    // version; layout mode carries the version switcher from there. The
+    // card never shows artifact content — the surface is one tap away.
+    const p = en.payload || {};
+    const title = p.title || p.path || 'Artifact';
+    const href = `/artifact/${(p.path || '').split('/').map(encodeURIComponent).join('/')}?v=${p.version || 1}`;
+    return (
+      <a data-artifact-card href={href} style={{ display: 'block', textDecoration: 'none', background: 'var(--card)', border: '1px solid var(--border)', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', borderRadius: 14, padding: '14px 16px', margin: '10px 0', color: 'var(--card-foreground)' }}>
+        <span style={{ ...eyebrow, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+            <span>Artifact</span>
+            {p.kind === 'snapshot' && <span style={{ letterSpacing: '0.04em', fontSize: 11, padding: '2px 7px', borderRadius: 999, background: 'var(--muted)', color: 'var(--foreground)', border: '1px solid var(--border)', display: 'inline-flex', gap: 4, alignItems: 'center' }}><Camera size={12} /> Snapshot</span>}
+          </span>
+          <span style={{ fontSize: 12, color: 'var(--muted-foreground)' }}>v{p.version || 1}</span>
+        </span>
+        <span style={{ display: 'block', fontSize: 16, lineHeight: 1.45, marginTop: 6, ...wrap }}>{title}</span>
+        <span style={{ display: 'flex', gap: 6, alignItems: 'center', fontSize: 13, color: 'var(--muted-foreground)', marginTop: 8, ...wrap }}>
+          {p.kind === 'snapshot' ? <Camera size={15} /> : <FrameCorners size={15} />} {p.path} — open in layout mode
+        </span>
+      </a>
+    );
+  }
+  if (en.kind === 'annotation') {
+    // v4 F2: an annotation renders as a widget card in the same family:
+    // ANNOTATION eyebrow + status, the element it anchors to, the note.
+    // The whole card links into layout mode at the annotated version.
+    // Replies and the resolution render as their own entries below.
+    const p = en.payload || {};
+    const ann = annByEntry.get(en.id);
+    const resolved = ann?.status === 'resolved';
+    const href = `/artifact/${(p.artifact_path || '').split('/').map(encodeURIComponent).join('/')}?v=${p.artifact_version || 1}`;
+    return (
+      <a data-annotation-card href={href} style={{ display: 'block', textDecoration: 'none', background: 'var(--card)', border: '1px solid var(--border)', boxShadow: '0 1px 3px rgba(0,0,0,0.08)', borderRadius: 14, padding: '14px 16px', margin: '10px 0', color: 'var(--card-foreground)', opacity: resolved ? 0.8 : 1 }}>
+        <span style={{ ...eyebrow, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+          <span>Annotation</span>
+          <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center', color: 'var(--foreground)' }}>{resolved ? <><CheckCircle size={14} /> Resolved</> : 'Open'}</span>
+        </span>
+        <span style={{ display: 'block', fontSize: 15, lineHeight: 1.5, marginTop: 6, ...wrap }}>{en.body}</span>
+        <span style={{ display: 'block', fontSize: 13, color: 'var(--muted-foreground)', marginTop: 8, ...wrap }}>
+          {p.element_id ? `#${p.element_id}` : (p.element_path || 'Page')}{p.element_text ? ` — “${p.element_text}”` : ''} · {p.artifact_path} v{p.artifact_version || 1}
+        </span>
+      </a>
+    );
+  }
+  if (en.kind === 'annotation_reply') {
+    return (
+      <article data-annotation-reply style={{ padding: '10px 14px', borderLeft: '3px solid var(--border)', background: 'var(--muted)', borderRadius: '4px 12px 12px 4px', margin: '8px 0' }}>
+        <p style={eyebrow}>Driver reply — annotation #{en.payload.annotation_entry_id}</p>
+        <p style={{ lineHeight: 1.55, margin: '4px 0 0', ...wrap }}>{en.body}</p>
+      </article>
+    );
+  }
+  if (en.kind === 'annotation_resolve') {
+    return (
+      <p data-annotation-resolved style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13, padding: '6px 10px', margin: '4px 0', borderRadius: 6, background: 'var(--muted)', color: 'var(--foreground)' }}>
+        <CheckCircle size={16} />
+        <span style={{ ...wrap, minWidth: 0 }}>Annotation #{en.payload.annotation_entry_id} resolved{en.payload.summary ? ` — ${en.payload.summary}` : ''}</span>
       </p>
     );
   }

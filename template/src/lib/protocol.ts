@@ -228,7 +228,7 @@ export function judgementScore(judgement: string, reason: string | undefined, an
   }
 }
 
-export interface EntryLike { id: number; kind: string; payload: any }
+export interface EntryLike { id: number; kind: string; payload: any; body?: string; createdAt?: string }
 export interface QuestionState {
   key: string; question: QuestionPayload; askedId: number;
   answer?: AnswerPayload; answerId?: number;
@@ -275,6 +275,111 @@ export function sharpnessGate(questions: QuestionState[]): Sharpness {
   if (recent.length < 3 || recent.some((s) => !(s.result === 'hit' && s.provisional === false)))
     errors.push({ code: 'sharp_recent_hits', message: 'the 3 most recent load-bearing scores must all be final (non-provisional) hits' });
   return { sharp: errors.length === 0, answered_load_bearing: answered.length, recent_scores: recent, errors };
+}
+
+// --- v4 design surface: artifacts -----------------------------------------
+// An artifact is a full standalone HTML page (not a snippet): the driver
+// generates it (kind 'generated') or captures an existing page as a static
+// visual record (kind 'snapshot'). Every write is a new version of a
+// versioned file; the artifact ENTRY in the record carries {path, version,
+// title, kind}. Artifacts are script-free — enforced here at the gate,
+// exactly like snippets, because layout mode renders them same-origin so
+// the Agentation toolbar can pick elements inside the frame (a scripted
+// page could fight the host chrome; a design surface never needs scripts
+// to be annotated). Snapshots may reference their captured external assets
+// (images/CSS) — a captured page without them is not a snapshot of
+// anything — but scripts and inline handlers are still rejected: the
+// driver strips them at capture time.
+export type ArtifactKind = 'generated' | 'snapshot';
+export interface ArtifactPayload { path: string; version: number; title?: string; kind?: ArtifactKind }
+export interface ArtifactState { path: string; title: string; kind: ArtifactKind; version: number; versions: number; lastEntryId: number }
+
+// Artifacts are full pages, so the cap is far above the 20,000-char snippet
+// cap — but still a cap: the record is not a file host.
+export const MAX_ARTIFACT_CHARS = 200000;
+
+export function artifactSafetyViolation(html: string, kind: ArtifactKind): string | null {
+  if (/<script\b/i.test(html)) return 'contains a <script> tag (artifacts are script-free)';
+  if (/\son\w+\s*=/i.test(html)) return 'contains an inline event-handler attribute (on*=)';
+  if (/(javascript|vbscript)\s*:/i.test(html)) return 'contains a javascript:/vbscript: URI';
+  if (/<(iframe|object|embed|base)\b/i.test(html)) return 'contains a forbidden embedding tag (iframe/object/embed/base)';
+  if (kind === 'snapshot') return null; // external assets allowed; scripts/handlers already rejected above
+  // kind 'generated': fully self-contained — nothing external may load.
+  if (/<(link|form)\b/i.test(html)) return 'contains a <link> or <form> tag (generated artifacts are self-contained)';
+  if (/\bsrcset\s*=/i.test(html)) return 'contains a srcset attribute (external resources are not allowed)';
+  if (/\bsrc\s*=/i.test(html)) return 'contains a src attribute (external resources are not allowed; use inline SVG or CSS instead)';
+  const hrefRe = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi;
+  let m: RegExpExecArray | null;
+  while ((m = hrefRe.exec(html)) !== null) {
+    const v = (m[1] ?? m[2] ?? m[3] ?? '').trim();
+    if (!v.startsWith('#')) return `contains an href that is not an in-page fragment: "${v.slice(0, 60)}"`;
+  }
+  if (/\bposter\s*=/i.test(html)) return 'contains a poster attribute (external resources are not allowed)';
+  if (/\bbackground\s*=/i.test(html)) return 'contains a background attribute (external resources are not allowed)';
+  const urlRe = /url\(\s*([^)]*)\)/gi;
+  let u: RegExpExecArray | null;
+  while ((u = urlRe.exec(html)) !== null) {
+    const target = u[1].trim().replace(/^["']|["']$/g, '').trim();
+    if (target.startsWith('#') || /^data:image\//i.test(target)) continue;
+    return `contains a CSS url() that is not an embedded image or fragment: "${target.slice(0, 60)}"`;
+  }
+  if (/@import/i.test(html)) return 'contains a CSS @import (external resources are not allowed)';
+  return null;
+}
+
+// Derive per-artifact state from the record: latest artifact entry per path
+// wins for title/kind/version; versions counts the artifact entries.
+// v4 F2 annotations: an annotation entry (human, from the Agentation
+// toolbar via the mirror/webhook) plus driver annotation_reply /
+// annotation_resolve entries derive one state per annotation. The record
+// stays append-only; resolution is a later entry, never a mutation.
+export type AnnotationState = {
+  entry_id: number; agentation_id: string | null; artifact_path: string; artifact_version: number;
+  element_path: string; element_id: string | null; element_text: string; comment: string;
+  status: 'open' | 'resolved';
+  replies: { entry_id: number; body: string; at: string }[];
+  resolution: { entry_id: number; summary: string; at: string } | null;
+  created_at: string;
+};
+export function deriveAnnotations(entries: EntryLike[]): AnnotationState[] {
+  const byId = new Map<number, AnnotationState>();
+  const order: AnnotationState[] = [];
+  for (const e of entries) {
+    const p = (e.payload ?? {}) as any;
+    if (e.kind === 'annotation') {
+      const a: AnnotationState = {
+        entry_id: e.id, agentation_id: typeof p.agentation_id === 'string' ? p.agentation_id : null,
+        artifact_path: String(p.artifact_path ?? ''), artifact_version: Number(p.artifact_version ?? 0),
+        element_path: String(p.element_path ?? ''), element_id: typeof p.element_id === 'string' ? p.element_id : null,
+        element_text: String(p.element_text ?? ''), comment: e.body ?? '',
+        status: 'open', replies: [], resolution: null, created_at: e.createdAt ?? '',
+      };
+      byId.set(e.id, a); order.push(a);
+    } else if (e.kind === 'annotation_reply') {
+      const a = byId.get(Number(p.annotation_entry_id)); if (a) a.replies.push({ entry_id: e.id, body: e.body ?? '', at: e.createdAt ?? '' });
+    } else if (e.kind === 'annotation_resolve') {
+      const a = byId.get(Number(p.annotation_entry_id));
+      if (a && !a.resolution) { a.status = 'resolved'; a.resolution = { entry_id: e.id, summary: String(p.summary ?? ''), at: e.createdAt ?? '' }; }
+    }
+  }
+  return order;
+}
+
+export function deriveArtifacts(entries: EntryLike[]): ArtifactState[] {
+  const byPath = new Map<string, ArtifactState>();
+  const order: ArtifactState[] = [];
+  for (const e of entries) {
+    if (e.kind !== 'artifact' || !e.payload?.path) continue;
+    const p = e.payload as ArtifactPayload;
+    let a = byPath.get(p.path);
+    if (!a) { a = { path: p.path, title: p.title || p.path, kind: p.kind || 'generated', version: p.version || 1, versions: 0, lastEntryId: e.id }; byPath.set(p.path, a); order.push(a); }
+    a.versions += 1;
+    a.version = p.version || a.version;
+    if (p.title) a.title = p.title;
+    if (p.kind) a.kind = p.kind;
+    a.lastEntryId = e.id;
+  }
+  return order;
 }
 
 // Stable element ids for artifacts: ids are id="..." attributes in HTML.

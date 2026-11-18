@@ -1,6 +1,6 @@
 {
   "name": "design-sprites-v3",
-  "version": "3.7.0-p3",
+  "version": "4.0.0-p5",
   "private": true,
   "scripts": {
     "dev": "next dev -p 8080",
@@ -17,7 +17,8 @@
     "drizzle-orm": "0.44.5",
     "@phosphor-icons/react": "2.1.7",
     "@modelcontextprotocol/sdk": "^1.20.0",
-    "zod": "^3.25.0"
+    "zod": "^3.25.0",
+    "agentation": "3.1.2"
   },
   "devDependencies": {
     "typescript": "5.9.2",
